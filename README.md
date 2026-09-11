@@ -459,10 +459,11 @@ The proxy receives OpenAI `image_url` format and converts it to the above CC for
 
 ### Pull from GHCR
 
-Pushes to `master`, `release`, or `v*` tags run tests and publish multi-architecture images (`linux/amd64` + `linux/arm64`) via GitHub Actions. Every build is tagged with its full 40-character commit SHA:
+Pushes to `master`, `release`, or `v*` tags run tests and publish multi-architecture images (`linux/amd64` + `linux/arm64`) via GitHub Actions. Every build is tagged with the first 7 characters of its commit SHA:
 
 ```bash
 IMAGE_TAG=$(git rev-parse HEAD)
+IMAGE_TAG=${IMAGE_TAG:0:7}
 docker pull "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
 docker run -d --name cc-proxy -p 3050:3050 -e PORT=3050 "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
 ```

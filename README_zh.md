@@ -457,10 +457,11 @@ CLI 发送图片的格式：
 
 ### 从 GHCR 拉取
 
-推送到 `master`、`release` 分支或 `v*` 标签时，GitHub Actions 会先运行测试，再构建并推送 `linux/amd64` + `linux/arm64` 多架构镜像。每次构建均使用完整的 40 位提交 ID 作为镜像标签：
+推送到 `master`、`release` 分支或 `v*` 标签时，GitHub Actions 会先运行测试，再构建并推送 `linux/amd64` + `linux/arm64` 多架构镜像。每次构建均使用提交 ID 的前 7 位作为镜像标签：
 
 ```bash
 IMAGE_TAG=$(git rev-parse HEAD)
+IMAGE_TAG=${IMAGE_TAG:0:7}
 docker pull "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
 docker run -d --name cc-proxy -p 3050:3050 -e PORT=3050 "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
 ```
