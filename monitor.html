@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>请求监控 · Command Code</title>
+<style>
+:root{color-scheme:light;--bg:#f5f7fa;--paper:#fff;--ink:#182438;--muted:#758095;--line:#e7ebf0;--green:#14856b;--green-bg:#e9f7f0;--nav:#132337;--mono:ui-monospace,SFMono-Regular,Consolas,monospace}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}button,input,select{font:inherit}button,select{cursor:pointer}button{background:white;border:1px solid #dce2e9;border-radius:7px;padding:8px 13px;color:var(--ink);transition:.15s}button:hover{background:#f0f4f7;border-color:#bbc5d1}button:disabled{opacity:.4;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid #63bea8;outline-offset:3px}.layout{display:grid;grid-template-columns:218px minmax(0,1fr);min-height:100vh}.sidebar{background:var(--nav);color:#a6b4c7;padding:30px 18px;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}.brand{display:flex;align-items:center;gap:10px;color:white;font-size:17px;font-weight:700;padding:0 10px;letter-spacing:-.5px}.brand-icon{background:#39bb94;border-radius:9px;width:31px;height:31px;display:grid;place-items:center;color:#102b2c;font:700 20px var(--mono)}.brand small{display:block;color:#8196af;font-size:10px;letter-spacing:2px;font-weight:500;margin-top:2px}.nav-label{font-size:10px;letter-spacing:2px;margin:48px 12px 13px;color:#70869f}.nav-active{color:#b0f0d8;background:#213f48;border:1px solid #2d5156;border-radius:7px;padding:11px 14px;display:flex;gap:12px;align-items:center}.nav-active svg{width:18px;height:18px}.sidebar-foot{margin-top:auto;font-size:11px;padding:22px 10px 0;color:#8295ac}.sidebar-foot strong{display:block;color:#bbc7d7;margin-bottom:5px;font-weight:500}.dot{display:inline-block;width:7px;height:7px;border-radius:100%;background:#25a67d;margin-right:7px}.main{padding:35px 38px 22px;max-width:1700px;width:100%;margin:auto}.breadcrumb{font-size:11px;color:var(--muted);margin-bottom:19px}.breadcrumb span{margin:0 9px;color:#bac2ce}.heading{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:28px}h1{font-size:27px;margin:0 0 7px;letter-spacing:-.8px;font-weight:650}.subtitle{color:var(--muted);font-size:12px;margin:0}.actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.live{font-size:11px;color:var(--green);background:var(--green-bg);padding:7px 11px;border-radius:20px;white-space:nowrap}.live.offline{color:#9b681e;background:#fff3dc}.live.offline .dot{background:#c89135}.icon-btn{display:flex;align-items:center;gap:7px;font-size:12px}.icon-btn svg{height:14px;width:14px}.banner{margin-bottom:18px;padding:12px 15px;background:#fff4e3;border:1px solid #f1ddbc;border-radius:8px;color:#98682e;font-size:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}.banner[hidden],.auth[hidden]{display:none}.auth{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.auth input{width:240px}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:17px;margin-bottom:22px}.card{background:var(--paper);border:1px solid var(--line);border-radius:10px;box-shadow:0 2px 3px #18243802}.stat{padding:19px 21px;position:relative}.stat-title{color:#6c788b;font-size:12px;display:flex;justify-content:space-between;align-items:center}.stat-icon{color:#8999ad;width:28px;height:28px;background:#f4f6f9;display:grid;place-items:center;border-radius:7px;font-family:var(--mono)}.stat-value{font-size:31px;letter-spacing:-1px;font-weight:650;margin:10px 0 9px;font-variant-numeric:tabular-nums}.stat-value.accent{color:var(--green)}.stat-note{font-size:11px;color:var(--muted);display:flex;gap:10px;flex-wrap:wrap}.stat-note b{font-weight:500;color:#48586e}.panels{display:grid;grid-template-columns:minmax(0,1.8fr) minmax(270px,1fr);gap:20px;margin-bottom:23px}.panel-head{display:flex;align-items:center;justify-content:space-between;padding:18px 21px 0;gap:10px}h2{margin:0;font-size:13px;font-weight:650}.subtle{font-size:10px;color:var(--muted)}.legend{display:flex;gap:14px;font-size:10px;color:var(--muted)}.legend i{width:7px;height:7px;display:inline-block;border-radius:2px;background:#49ac90;margin-right:5px}.legend i.blue{background:#8aa6d4}.chart-wrap{padding:18px 21px 12px;height:191px}.chart{width:100%;height:138px;display:block;overflow:visible}.chart text{font-size:10px;fill:#8a96a7}.chart-note{font-size:10px;color:var(--muted);margin-top:7px}.cache-panel{padding-bottom:20px}.cache-content{display:flex;gap:27px;align-items:center;justify-content:center;padding:25px 20px 18px}.ring{width:111px;height:111px;border-radius:50%;background:conic-gradient(var(--green) 0deg,#edf1f5 0deg);display:grid;place-items:center;flex-shrink:0}.ring-inner{width:91px;height:91px;border-radius:50%;background:white;display:flex;align-items:center;justify-content:center;flex-direction:column}.ring-value{font-size:23px;font-weight:650;letter-spacing:-.6px}.ring-label{font-size:10px;color:var(--muted)}.cache-breakdown{display:grid;gap:12px;min-width:125px}.breakdown-row{display:flex;align-items:center;justify-content:space-between;gap:18px;font-size:11px;color:var(--muted)}.breakdown-row b{font:500 12px var(--mono);color:var(--ink)}.cache-foot{font-size:10px;color:var(--muted);text-align:center;padding:0 15px}.logs-head{padding:19px 21px;display:flex;align-items:center;justify-content:space-between}.count{font:10px var(--mono);color:#7c899b;border:1px solid var(--line);background:#f7f9fb;border-radius:4px;padding:3px 6px;margin-left:8px}.filters{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:13px 21px;display:flex;gap:9px;flex-wrap:wrap}input,select{border:1px solid #e0e5ec;border-radius:6px;background:#fff;color:#506076;padding:8px 10px;font-size:12px;min-height:34px}input[type=search]{width:260px;margin-right:auto}select{max-width:250px}.table-scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;white-space:nowrap;text-align:left}th{font-size:10px;color:#8290a2;font-weight:500;background:#fafbfc;padding:12px 19px}td{padding:15px 19px;font-size:11px;border-top:1px solid #eef1f5;color:#526278}.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}th.num{font-family:inherit}td.model{color:#26394e;font-weight:550;max-width:220px;overflow:hidden;text-overflow:ellipsis}td .path{font-size:9px;color:#8a96a7;font-weight:400;display:block;margin-top:3px}.request-time{font-family:var(--mono);color:#35465d}.request-id{font-size:9px;color:#95a0af;display:block;margin-top:3px;font-family:var(--mono)}tbody tr:hover{background:#fafcfe}.badge{border-radius:4px;padding:4px 7px;font-size:10px;display:inline-block;background:#eaf7f0;color:#288061}.badge.error{background:#fceeed;color:#bd655b}.badge.pending{background:#edf3fd;color:#5c81bf}.badge.aborted{background:#fff3e4;color:#af7d35}.token-cache{color:var(--green)}.detail-btn{padding:3px 7px;border:0;color:#95a0af;background:none;font-size:17px}.empty td{padding:49px 20px;text-align:center;white-space:normal;color:var(--muted)}.empty strong{display:block;color:#46586e;font-size:13px;font-weight:500;margin-bottom:6px}.table-foot{display:flex;align-items:center;justify-content:space-between;padding:15px 21px;border-top:1px solid var(--line);font-size:10px;color:var(--muted);gap:15px}.pagination{display:flex;align-items:center;gap:12px}.pagination button{font-size:11px;padding:4px 9px}.footer{display:flex;justify-content:space-between;font-size:10px;color:#94a0af;padding:18px 1px;gap:15px;flex-wrap:wrap}dialog{border:1px solid var(--line);border-radius:13px;width:min(570px,92vw);padding:25px;box-shadow:0 20px 70px #13233730}dialog::backdrop{background:#13233766}dialog h2{font-size:17px}dialog header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}dl{display:grid;grid-template-columns:110px 1fr;gap:12px;font-size:12px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere;font-family:var(--mono)}.dialog-note{color:var(--muted);font-size:11px;border-top:1px solid var(--line);padding-top:16px}.mobile-brand{display:none}@media(min-width:1500px){.main{padding:42px 50px}}@media(max-width:1150px){.layout{grid-template-columns:175px minmax(0,1fr)}.main{padding:25px 22px}.brand{font-size:14px;padding:0}.stats{gap:10px}.stat{padding:16px}.stat-value{font-size:27px}.cache-content{gap:15px}.heading{align-items:flex-start}.panels{grid-template-columns:minmax(0,1.4fr) minmax(260px,1fr)}}@media(max-width:850px){.layout{display:block}.sidebar{display:none}.mobile-brand{display:block;font-size:11px;font-weight:600;letter-spacing:1px;color:var(--green);margin-bottom:18px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.panels{grid-template-columns:1fr}.cache-content{padding:20px}.main{padding:23px 18px}.heading{flex-direction:column;gap:15px}h1{font-size:25px}.filters{padding:12px}.filters input[type=search]{width:100%}.filters select{flex:1;min-width:100px}.table-foot{flex-wrap:wrap}.logs-head{padding:16px}.footer{font-size:9px}.stat-value{font-size:28px}}
+.custom-range{display:flex;gap:10px;align-items:center;flex-wrap:wrap;width:100%;font-size:11px;color:var(--muted)}.custom-range[hidden]{display:none}.custom-range label{display:flex;gap:7px;align-items:center}.filter-error{color:#b95249;font-size:11px;width:100%}.history-note{padding:10px 21px;border-top:1px solid var(--line);color:var(--muted);font-size:11px}.key-cell{font-family:var(--mono);font-size:11px}.filters input[type=datetime-local]{max-width:100%}.filters button{font-size:12px}.date-label{display:block;font:9px var(--mono);color:#95a0af;margin-bottom:3px}
+</style>
+</head>
+<body>
+<div class="layout">
+<aside class="sidebar"><div class="brand"><span class="brand-icon">⌘</span><div>Command Code<small>PROXY CONSOLE</small></div></div><div class="nav-label">WORKSPACE</div><div class="nav-active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>请求监控</div><div class="sidebar-foot"><strong><span class="dot"></span>请求可观测性</strong>OpenAI & Anthropic<br>实时用量 · 缓存分析</div></aside>
+<main class="main">
+<div class="mobile-brand">⌘ COMMAND CODE / PROXY CONSOLE</div><div class="breadcrumb">工作空间<span>/</span>请求监控</div>
+<div class="heading"><div><h1>请求监控</h1><p class="subtitle">跟踪每一次调用，让 Token 用量与缓存效率一目了然。</p></div><div class="actions"><span id="connection" class="live offline" role="status"><span class="dot"></span>正在连接</span><button id="pause" class="icon-btn">暂停刷新</button><button id="export" class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5"/></svg>导出日志</button></div></div>
+<div id="banner" class="banner" hidden><span id="message"></span><form id="auth" class="auth" hidden><input id="token" type="password" placeholder="输入监控访问令牌" aria-label="监控访问令牌" autocomplete="off"><button type="submit">连接</button></form></div>
+<section class="stats" aria-label="请求统计">
+<div class="card stat"><div class="stat-title">请求总数<span class="stat-icon">↗</span></div><div id="total" class="stat-value">0</div><div class="stat-note"><span>成功 <b id="success">0</b></span><span>失败 <b id="errors">0</b></span><span>进行中 <b id="pending">0</b></span></div></div>
+<div class="card stat"><div class="stat-title">Token 总用量<span class="stat-icon">T</span></div><div id="tokens" class="stat-value">—</div><div class="stat-note"><span>输入 <b id="input">—</b></span><span>输出 <b id="output">—</b></span><span title="上游报告的输出 Token 明细，不重复加入总用量">其中推理 <b id="reasoning">—</b></span></div></div>
+<div class="card stat"><div class="stat-title">缓存命中率<span class="stat-icon">◈</span></div><div id="cache-rate" class="stat-value accent">—</div><div class="stat-note"><span>缓存读取 <b id="cached">—</b> Token</span></div></div>
+<div class="card stat"><div class="stat-title">平均响应耗时<span class="stat-icon">◷</span></div><div id="latency" class="stat-value">—</div><div class="stat-note"><span>成功率 <b id="success-rate">—</b></span><span>已结束请求</span></div></div>
+</section>
+<div class="panels"><section class="card"><div class="panel-head"><h2>Token 用量趋势 <span id="trend-range" class="subtle">· 当前时间段</span></h2><div class="legend"><span><i></i>输入</span><span><i class="blue"></i>输出</span></div></div><div class="chart-wrap"><svg id="chart" class="chart" viewBox="0 0 620 138" preserveAspectRatio="none" role="img" aria-label="当前筛选时间段的输入及输出Token用量"></svg><div class="chart-note">按请求开始时间聚合 · 当前筛选的全部记录</div></div></section>
+<section class="card cache-panel"><div class="panel-head"><h2>缓存利用情况</h2><span class="subtle">上游报告</span></div><div class="cache-content"><div id="ring" class="ring"><div class="ring-inner"><span id="ring-rate" class="ring-value">—</span><span class="ring-label">输入命中率</span></div></div><div class="cache-breakdown"><div class="breakdown-row"><span>缓存读取</span><b id="cache-read">—</b></div><div class="breakdown-row"><span>缓存写入</span><b id="cache-write">—</b></div><div class="breakdown-row"><span>命中请求</span><b id="cache-hits">0</b></div></div></div><div class="cache-foot">缓存读取 Token ÷ 同批请求的输入 Token；写入不计作命中</div></section></div>
+<section class="card"><div class="logs-head"><h2>请求日志 <span id="log-count" class="count">0 条</span></h2><span id="updated" class="subtle" aria-live="off">等待首次同步</span></div>
+<div class="filters">
+<input id="search" type="search" placeholder="搜索模型、Key 标识、档位或请求 ID…" aria-label="搜索请求">
+<select id="key" aria-label="按 Key 筛选"><option value="">全部 Key</option><option value="none">未提供 Key</option></select>
+<select id="model" aria-label="按模型筛选"><option value="">全部模型</option></select>
+<select id="status" aria-label="按状态筛选"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option><option value="pending">进行中</option><option value="aborted">已断开</option></select>
+<select id="range" aria-label="按时间筛选"><option value="1440" selected>最近 1 天</option><option value="10080">最近 7 天</option><option value="43200">最近 30 天</option><option value="custom">自定义时间段</option><option value="0">全部保留记录</option><option value="15">最近 15 分钟</option><option value="60">最近 1 小时</option></select>
+<button id="reset-filters" type="button">重置筛选</button>
+<div id="custom-range" class="custom-range" hidden><label>开始时间 <input id="from" type="datetime-local" step="1" aria-label="开始时间"></label><label>结束时间 <input id="to" type="datetime-local" step="1" aria-label="结束时间"></label><span>使用本地时区，包含起止时间</span></div>
+<div id="filter-error" class="filter-error" role="alert" hidden></div>
+</div>
+<div id="history-note" class="history-note">正在读取历史记录…</div>
+<div class="table-scroll"><table><thead><tr><th>请求时间 / ID</th><th>Key</th><th>模型 / 接口</th><th>状态</th><th>模式</th><th title="实际发往上游的推理档位；原始请求档位见详情">转发档位</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num" title="输出 Token 的推理明细，上游未报告时显示 —">推理 Token</th><th class="num">缓存读取</th><th class="num">耗时</th><th aria-label="操作"></th></tr></thead><tbody id="rows"></tbody></table></div><div class="table-foot"><span id="coverage">— 表示上游未报告用量</span><div class="pagination"><span id="page-info">第 1 / 1 页</span><button id="prev" aria-label="上一页">←</button><button id="next" aria-label="下一页">→</button></div></div></section>
+<footer class="footer"><span id="retention">最近 30 天历史 · Key 仅保留脱敏标识 · 不记录对话内容</span><span>每 2 秒刷新 · 所有统计随筛选条件变化</span></footer>
+</main></div>
+<dialog id="detail"><header><h2>请求详情</h2><button id="close-detail" aria-label="关闭详情">✕</button></header><p id="detail-status" class="subtle" role="status"></p><dl id="detail-content"></dl><p class="dialog-note">Key 去掉 user_ 后仅显示前 4 位与后 4 位，中间隐藏。Token 仅采集上游报告值，— 表示未报告；失败或中断的请求可能只有部分用量。缓存读取包含在输入 Token 中，推理 Token 属于输出明细，均不重复加入总量。转发档位 — 表示未转发该字段或请求尚未发往上游。</p></dialog>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const nf = new Intl.NumberFormat('zh-CN');
+const number = value => value == null ? '—' : nf.format(value);
+const short = value => value == null ? '—' : value >= 1e6 ? (value / 1e6).toFixed(2) + 'M' : value >= 1e4 ? (value / 1e3).toFixed(1) + 'K' : nf.format(value);
+const duration = ms => ms == null ? '—' : ms < 1000 ? Math.round(ms) + ' ms' : (ms / 1000).toFixed(2) + ' s';
+const labels = {pending: '进行中', success: '成功', error: '失败', aborted: '已断开'};
+const state = {data: null, queryParams: null, page: 1, paused: false, token: '', timer: null, debounce: null, controller: null, detailController: null, selectedId: null, exporting: false};
+const pageSize = 15;
+function localInputValue(time) {
+  const date = new Date(time);
+  return new Date(time - date.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+}
+function filterParams(now = Date.now()) {
+  const params = new URLSearchParams();
+  for (const [id, name] of [['search', 'q'], ['key', 'keyId'], ['model', 'model'], ['status', 'status']]) {
+    const value = $(id).value.trim();
+    if (value) params.set(name, value);
+  }
+  const range = $('range').value;
+  let error = '';
+  if (range === 'custom') {
+    const from = new Date($('from').value).getTime(), to = new Date($('to').value).getTime();
+    if (!Number.isFinite(from) || !Number.isFinite(to)) error = '请选择完整的开始和结束时间。';
+    else if (from > to) error = '开始时间不能晚于结束时间。';
+    else { params.set('from', new Date(from).toISOString()); params.set('to', new Date(to).toISOString()); }
+  } else if (Number(range) > 0) {
+    params.set('from', new Date(now - Number(range) * 60000).toISOString());
+    params.set('to', new Date(now).toISOString());
+  }
+  $('filter-error').hidden = !error;
+  $('filter-error').textContent = error;
+  $('export').disabled = !!error || state.exporting || !state.data;
+  return error ? null : params;
+}
+const percent = value => value == null ? '—' : (value * 100).toFixed(1) + '%';
+function cell(row, text, className) {
+  const td = document.createElement('td');
+  td.textContent = text;
+  if (className) td.className = className;
+  row.append(td);
+  return td;
+}
+
+function renderChart(bins = []) {
+  const svg = $('chart'), ns = 'http://www.w3.org/2000/svg';
+  svg.replaceChildren();
+  const add = (name, attrs, text) => {
+    const el = document.createElementNS(ns, name);
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+    if (text != null) el.textContent = text;
+    svg.append(el);
+    return el;
+  };
+  if (!bins.length) return;
+  const max = Math.max(1, ...bins.map(b => b.inputTokens + b.outputTokens));
+  for (let i = 0; i < 3; i++) {
+    const y = 12 + i * 48;
+    add('line', {x1: 38, y1: y, x2: 618, y2: y, stroke: '#edf0f4', 'stroke-dasharray': '3 4'});
+    add('text', {x: 30, y: y + 3, 'text-anchor': 'end'}, short(max * (1 - i / 2)));
+  }
+  const span = Date.parse(bins.at(-1).startedAt) - Date.parse(bins[0].startedAt);
+  const time = i => new Date(bins[i].startedAt).toLocaleString('zh-CN', span >= 86400000
+    ? {month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false} : {hour: '2-digit', minute: '2-digit', hour12: false});
+  const spacing = 570 / Math.max(1, bins.length);
+  bins.forEach((b, i) => {
+    const x = 43 + i * spacing, h1 = b.inputTokens / max * 96, h2 = b.outputTokens / max * 96;
+    for (const [height, y, fill] of [[h1, 108 - h1, '#49ac90'], [h2, 108 - h1 - h2, '#8aa6d4']]) {
+      const rect = add('rect', {x, y, width: 9, height, rx: 2, fill});
+      const title = document.createElementNS(ns, 'title');
+      title.textContent = `${new Date(b.startedAt).toLocaleString('zh-CN')} 输入 ${number(b.inputTokens)} / 输出 ${number(b.outputTokens)}`;
+      rect.append(title);
+    }
+  });
+  [...new Set([0, Math.floor(bins.length / 3), Math.floor(bins.length * 2 / 3), bins.length - 1])].forEach(i =>
+    add('text', {x: 43 + i * spacing, y: 132, 'text-anchor': i === bins.length - 1 ? 'end' : 'start'}, time(i)));
+}
+
+function render() {
+  const summary = state.data?.summary || {};
+  const input = summary.inputTokens, output = summary.outputTokens, cacheRate = summary.cacheRate;
+  const values = {
+    total: number(summary.total), success: number(summary.success), errors: number(summary.error), pending: number(summary.pending),
+    tokens: input == null && output == null ? '—' : short((input || 0) + (output || 0)),
+    input: short(input), output: short(output), cached: short(summary.cachedInputTokens), reasoning: short(summary.reasoningTokens),
+    'cache-rate': percent(cacheRate), 'ring-rate': percent(cacheRate),
+    'cache-read': number(summary.cachedInputTokens), 'cache-write': number(summary.cacheWriteTokens),
+    'cache-hits': number(summary.cacheHits), latency: duration(summary.avgDurationMs),
+    'success-rate': percent(summary.successRate), 'log-count': number(summary.total) + ' 条',
+    coverage: state.data ? `${summary.usageReported} / ${summary.total} 条已报告用量 · ${summary.reasoningReported} 条已报告推理 Token · 已断开 ${summary.aborted} 条` : '等待查询结果 · — 表示未报告',
+  };
+  Object.entries(values).forEach(([id, value]) => { $(id).textContent = value; });
+  $('ring').style.background = `conic-gradient(var(--green) ${Math.min(1, Math.max(0, cacheRate || 0)) * 360}deg,#edf1f5 0deg)`;
+  renderChart(state.data?.trend);
+  renderRows(state.data?.requests || []);
+  $('trend-range').textContent = '· ' + $('range').selectedOptions[0].textContent;
+}
+
+function renderRows(rows) {
+  const focusedId = document.activeElement?.dataset.requestId;
+  const pages = state.data?.pages || 1;
+  $('page-info').textContent = `第 ${state.page} / ${pages} 页`;
+  $('prev').disabled = !state.data || state.page <= 1;
+  $('next').disabled = !state.data || state.page >= pages;
+  $('rows').replaceChildren();
+  let focusTarget;
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    const time = cell(tr, new Date(r.startedAt).toLocaleTimeString('zh-CN', {hour12: false}), 'request-time');
+    const date = document.createElement('span'); date.className = 'date-label';
+    date.textContent = new Date(r.startedAt).toLocaleDateString('zh-CN'); time.prepend(date);
+    const id = document.createElement('span');
+    id.className = 'request-id'; id.textContent = r.id.slice(0, 8); time.append(id);
+    time.title = new Date(r.startedAt).toLocaleString('zh-CN');
+    const key = cell(tr, r.keyLabel || '未提供 Key', 'key-cell');
+    key.title = r.keyId ? 'Key 标识：' + r.keyId.slice(0, 12) : '请求未提供可识别的 API Key';
+    const model = cell(tr, r.model || '—', 'model');
+    model.title = r.model || '';
+    const path = document.createElement('span');
+    path.className = 'path'; path.textContent = r.method + ' ' + r.path; model.append(path);
+    const status = cell(tr, ''), badge = document.createElement('span');
+    badge.className = 'badge ' + r.status; badge.textContent = labels[r.status] || r.status; status.append(badge);
+    cell(tr, r.stream == null ? '—' : r.stream ? '流式' : '非流式');
+    const effort = cell(tr, r.reasoningEffort ?? '—');
+    effort.title = '客户端档位：' + (r.requestedReasoningEffort ?? '未指定');
+    cell(tr, number(r.inputTokens), 'num'); cell(tr, number(r.outputTokens), 'num');
+    cell(tr, number(r.reasoningTokens), 'num');
+    cell(tr, number(r.cachedInputTokens), 'num token-cache'); cell(tr, duration(r.durationMs), 'num');
+    const action = cell(tr, ''), button = document.createElement('button');
+    button.className = 'detail-btn'; button.textContent = '↗'; button.dataset.requestId = r.id;
+    button.setAttribute('aria-label', '查看请求 ' + r.id.slice(0, 8) + ' 详情');
+    button.onclick = () => { state.selectedId = r.id; renderDetail(r); $('detail').showModal(); if (!state.paused) refreshDetail(); };
+    if (r.id === focusedId) focusTarget = button;
+    action.append(button); $('rows').append(tr);
+  }
+  if (focusedId) (focusTarget || $('search')).focus({preventScroll: true});
+  if (!rows.length) {
+    const tr = document.createElement('tr'); tr.className = 'empty';
+    const td = cell(tr, ''); td.colSpan = 12;
+    const title = document.createElement('strong');
+    title.textContent = state.data ? '没有符合筛选条件的请求' : '等待查询结果';
+    td.append(title, document.createTextNode(state.data ? '调整 Key、模型或时间范围，或通过代理发起新的请求。' : '连接服务后，日志与统计将自动显示。'));
+    $('rows').append(tr);
+  }
+}
+
+function renderDetail(r) {
+  $('detail-status').textContent = '';
+  $('detail-content').replaceChildren();
+  const values = {
+    '请求 ID': r.id, '开始时间': new Date(r.startedAt).toLocaleString('zh-CN'),
+    '结束时间': r.endedAt ? new Date(r.endedAt).toLocaleString('zh-CN') : '—',
+    '接口': r.method + ' ' + r.path, '模型': r.model || '—', '模式': r.stream == null ? '—' : r.stream ? '流式' : '非流式',
+    'Key': r.keyLabel || '未提供 Key', 'Key 标识': r.keyId ? r.keyId.slice(0, 12) : '—',
+    '客户端档位': r.requestedReasoningEffort ?? '未指定', '转发档位': r.reasoningEffort ?? '—',
+    '思考模式': r.thinkingType ?? '—', '思考预算 Token': number(r.thinkingBudgetTokens),
+    '状态': labels[r.status], 'HTTP 状态': r.httpStatus ?? '—', '耗时': duration(r.durationMs),
+    '输入 Token': number(r.inputTokens), '输出 Token': number(r.outputTokens),
+    '推理 Token': number(r.reasoningTokens),
+    '缓存读取': number(r.cachedInputTokens), '缓存写入': number(r.cacheWriteTokens), '错误类型': r.error || '—',
+  };
+  for (const [key, value] of Object.entries(values)) {
+    const dt = document.createElement('dt'), dd = document.createElement('dd');
+    dt.textContent = key; dd.textContent = value; $('detail-content').append(dt, dd);
+  }
+}
+function connection(text, good) {
+  $('connection').classList.toggle('offline', !good); $('connection').replaceChildren();
+  const dot = document.createElement('span'); dot.className = 'dot';
+  $('connection').append(dot, document.createTextNode(text));
+}
+
+function showError(message) {
+  $('banner').hidden = false; $('message').textContent = message;
+}
+async function api(path, signal) {
+  const response = await fetch(path, {headers: state.token ? {Authorization: 'Bearer ' + state.token} : {}, cache: 'no-store', signal});
+  if (response.status === 401) { $('auth').hidden = false; throw new Error('请输入 CC_MONITOR_TOKEN 配置的监控令牌。'); }
+  if (response.status === 403) throw new Error('当前地址无监控访问权限。远程访问需设置 CC_MONITOR_TOKEN。');
+  if (!response.ok) throw new Error('监控请求失败（HTTP ' + response.status + '）。');
+  return response;
+}
+function updateOptions(id, entries, initial) {
+  const select = $(id), selected = select.value;
+  if (selected && !entries.some(([value]) => value === selected) && !initial.some(([value]) => value === selected)) {
+    entries.push([selected, select.selectedOptions[0]?.textContent || selected]);
+  }
+  const options = [...initial, ...entries];
+  if (options.length !== select.options.length || options.some(([value, text], i) => select.options[i]?.value !== value || select.options[i]?.text !== text)) {
+    select.replaceChildren(...options.map(([value, text]) => new Option(text, value)));
+    select.value = selected;
+  }
+}
+function renderHistory(data) {
+  const first = data.oldestAvailableAt ? new Date(data.oldestAvailableAt).toLocaleString('zh-CN') : null;
+  const notes = [first ? '最早保留请求：' + first : '尚无历史请求', '统计包含筛选后的全部记录，不限当前页'];
+  if (data.historyTruncated) notes.push('历史记录已达到保留边界，更早记录不可查询');
+  if (data.persistenceError) notes.push('本地日志保存或读取异常，历史可能不完整');
+  $('history-note').textContent = notes.join(' · ');
+  $('retention').textContent = `保留最近 ${data.retentionDays} 天，最多 ${number(data.retentionLimit)} 条 · ${data.persistenceEnabled ? '已开启本地保存' : '仅内存，重启清空'} · Key 仅保留脱敏标识`;
+}
+async function refresh(force = false) {
+  clearTimeout(state.timer);
+  if ((!force && state.paused) || state.controller) return;
+  const params = filterParams();
+  if (!params) { state.data = null; render(); connection('时间范围无效', false); return; }
+  params.set('page', state.page); params.set('pageSize', pageSize);
+  const controller = new AbortController(); state.controller = controller;
+  const timeout = setTimeout(() => controller.abort('timeout'), 10000);
+  try {
+    const response = await api('/monitor/api/query?' + params, controller.signal);
+    const data = await response.json();
+    if (state.controller !== controller) return;
+    if (!Array.isArray(data.requests) || !data.summary || !data.facets) throw new Error('监控接口格式不正确，请重启代理后访问 /monitor。');
+    state.data = data; state.page = data.page;
+    state.queryParams = new URLSearchParams(params);
+    state.queryParams.delete('page'); state.queryParams.delete('pageSize');
+    $('export').disabled = state.exporting;
+    $('banner').hidden = true; $('auth').hidden = true; $('token').value = '';
+    updateOptions('model', data.facets.models.map(model => [model, model]), [['', '全部模型']]);
+    const labels = new Map();
+    for (const key of data.facets.keys) labels.set(key.label, (labels.get(key.label) || 0) + 1);
+    updateOptions('key', data.facets.keys.map(key => [key.id, key.label + (labels.get(key.label) > 1 ? ' · ' + key.id.slice(0, 8) : '')]), [['', '全部 Key'], ['none', '未提供 Key']]);
+    $('updated').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12: false});
+    renderHistory(data); render();
+    connection(state.paused ? '已暂停' : '实时同步', !state.paused);
+    if (!state.paused) refreshDetail();
+  } catch (error) {
+    if (state.controller !== controller) return;
+    if (state.data) { state.page = state.data.page; render(); }
+    connection('连接中断', false);
+    showError(controller.signal.aborted ? '监控接口连接超时，正在重试。' : error instanceof SyntaxError
+      ? '监控接口未连接，请从代理的 /monitor 地址打开页面。' : error.message);
+  } finally {
+    clearTimeout(timeout);
+    if (state.controller === controller) { state.controller = null; if (!state.paused) state.timer = setTimeout(() => refresh(), 2000); }
+  }
+}
+async function refreshDetail() {
+  if (!$('detail').open || !state.selectedId || state.detailController) return;
+  const id = state.selectedId;
+  const controller = new AbortController(); state.detailController = controller;
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await api('/monitor/api/request?' + new URLSearchParams({id}), controller.signal);
+    const data = await response.json();
+    if (state.selectedId === id && $('detail').open && !controller.signal.aborted) renderDetail(data.request);
+  } catch (error) {
+    if (!controller.signal.aborted && state.selectedId === id) {
+      $('detail-status').textContent = '详情暂未更新，记录可能已过期或连接中断。';
+    }
+  } finally { clearTimeout(timeout); if (state.detailController === controller) state.detailController = null; }
+}
+function cancelRefresh() {
+  clearTimeout(state.timer); clearTimeout(state.debounce);
+  state.controller?.abort(); state.controller = null;
+  state.detailController?.abort(); state.detailController = null;
+}
+function filtersChanged(delay = 0) {
+  cancelRefresh(); state.page = 1; state.data = null; render();
+  $('updated').textContent = '正在查询…';
+  if (!filterParams()) { connection('时间范围无效', false); return; }
+  state.debounce = setTimeout(() => refresh(true), delay);
+}
+for (const id of ['key', 'model', 'status', 'from', 'to']) $(id).addEventListener('change', () => filtersChanged());
+$('search').addEventListener('input', () => filtersChanged(300));
+$('range').addEventListener('change', () => {
+  $('custom-range').hidden = $('range').value !== 'custom';
+  if (!$('custom-range').hidden && !$('from').value && !$('to').value) {
+    $('from').value = localInputValue(Date.now() - 86400000); $('to').value = localInputValue(Date.now());
+  }
+  filtersChanged();
+});
+$('reset-filters').onclick = () => {
+  for (const id of ['key', 'model', 'status', 'search', 'from', 'to']) $(id).value = '';
+  $('range').value = '1440'; $('custom-range').hidden = true; filtersChanged();
+};
+function changePage(delta) {
+  cancelRefresh(); state.page += delta;
+  $('prev').disabled = true; $('next').disabled = true;
+  refresh(true);
+}
+$('prev').onclick = () => changePage(-1);
+$('next').onclick = () => changePage(1);
+$('pause').onclick = () => {
+  state.paused = !state.paused; $('pause').textContent = state.paused ? '继续刷新' : '暂停刷新';
+  if (state.paused) { cancelRefresh(); connection('已暂停', false); } else refresh();
+};
+$('auth').onsubmit = e => {
+  e.preventDefault(); state.token = $('token').value.trim(); state.paused = false;
+  $('pause').textContent = '暂停刷新'; cancelRefresh(); refresh();
+};
+$('export').onclick = async () => {
+  if (state.exporting) return;
+  if (!filterParams() || !state.data || !state.queryParams) return;
+  const params = new URLSearchParams(state.queryParams);
+  state.exporting = true; $('export').disabled = true;
+  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 60000);
+  try {
+    const response = await api('/monitor/api/export?' + params, controller.signal);
+    const blob = await response.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = 'commandcode-requests-' + new Date().toISOString().replaceAll(':', '-') + '.json'; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { showError(controller.signal.aborted ? '导出超时，请缩小时间范围后重试。' : error.message); }
+  finally { clearTimeout(timeout); state.exporting = false; filterParams(); }
+};
+$('close-detail').onclick = () => $('detail').close();
+$('detail').addEventListener('close', () => {
+  state.detailController?.abort(); state.detailController = null;
+  const button = [...$('rows').querySelectorAll('button')].find(b => b.dataset.requestId === state.selectedId);
+  (button || $('search')).focus({preventScroll: true}); state.selectedId = null;
+});
+$('detail').addEventListener('click', e => {
+  if (e.target !== $('detail')) return;
+  const r = $('detail').getBoundingClientRect();
+  if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) $('detail').close();
+});
+render();
+refresh();
+</script>
+</body>
+</html>

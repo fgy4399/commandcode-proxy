@@ -7,6 +7,10 @@ services:
       - "${PROXY_PORT:-3050}:3050"
     environment:
       PORT: "3050"
+      CC_MONITOR_TOKEN: "${CC_MONITOR_TOKEN:-}"
+      CC_MONITOR_DIR: "/app/data/monitor"
+    volumes:
+      - monitor-data:/app/data/monitor
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--spider", "http://127.0.0.1:3050/health"]
@@ -14,3 +18,6 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+
+volumes:
+  monitor-data:

@@ -2,7 +2,7 @@
 
 > [English Docs](README.md)
 
-将 Command Code API 转换为 OpenAI / Anthropic 兼容接口的反代代理。单文件，零外部依赖。
+将 Command Code API 转换为 OpenAI / Anthropic 兼容接口的反代代理，零外部依赖，内置请求监控页。
 
 基于对官方 CLI 网络流量的分析，精确还原了 Command Code API 的请求协议（含设备指纹与生命周期预请求），并实现了多层兼容适配。
 
@@ -26,6 +26,34 @@ curl http://127.0.0.1:3050/v1/chat/completions \
   -d '{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+## 请求监控
+
+启动后访问 **http://127.0.0.1:3050/monitor**（使用自定义端口时替换 `3050`）。页面每 2 秒刷新，支持 Key、模型、状态组合筛选，以及最近 **1 天、7 天、30 天、自定义时间段**（本地时区，精确到秒，包含起止时刻）。支持搜索、分页、实时详情、暂停和导出筛选结果；统计与趋势覆盖筛选后的全部记录，不限当前页。
+
+- 记录 API 请求的开始时间、模型、协议路径、流式模式、状态、HTTP 状态和耗时，包括请求校验失败、上游错误及客户端断连。`/health`、`OPTIONS` 和监控自身请求不进入日志。
+- 展示输入/输出 Token、缓存读取/写入、命中请求数、输入缓存命中率和当前时间段用量趋势。缓存命中率 = 缓存读取 Token ÷ **同时报告输入和缓存读取字段的请求**的输入 Token；缓存写入不计作命中，缓存读取不重复加入总 Token。
+- OpenAI 和 Anthropic 的流式/非流式请求都从上游原始 usage 采集。`—` 表示字段未报告，`0` 表示明确报告为零；不使用本地输出估算值。失败或中断的请求可能只有部分用量。
+- 每条日志显示实际转发的推理档位和推理 Token；详情可对照客户端档位、`thinking.type` 和思考预算。推理 Token 读取上游 `usage.reasoningTokens` 或 `usage.outputTokenDetails.reasoningTokens`（含 `totalUsage`）；未报告显示 `—`，明确为零显示 `0`，不从推理文本估算。推理 Token 属于输出明细，不重复加入总量。转发档位 `—` 表示未转发该字段或尚未发起上游请求，不表示模型没有推理。
+- 显式档位原样透传，不强制限制为 `low`/`medium`/`high`。OpenAI 使用 `reasoning_effort`；Anthropic 按 `reasoning_effort` > `output_config.effort` > `thinking.effort` 取值并转成上游 `params.reasoning_effort`。`adaptive` 未指定档位时不再默认填 `medium`；只有未指定显式档位的 `thinking.type=enabled` 预算请求保留兼容映射：≥10000→high、≥5000→medium、其余→low。上游是否支持该档位、是否返回推理明细由上游决定。
+- 每条请求记录脱敏 Key：去掉 `user_`，只显示前 4 位和后 4 位，例如 `4jGG****DZch`。长度不超过 8 位的短 Key 全部隐藏。只保存脱敏值和 SHA-256 标识，不保存完整 Key；即使两个 Key 的首尾相同，也可以分别筛选。未提供或无法识别的 Key 归入“未提供 Key”。
+- 默认保留最近 **30 天、最多 100,000 条请求**，已结束记录保存到项目目录下的 `data/monitor/history-v1.json`，重启后恢复。达到数量或时间边界会淘汰较早记录，并在页面提示；统计仅覆盖保留的历史。旧版本已清空的内存日志无法补回。进行中请求只保存在内存，异常退出可能丢失尚未写入的最近约一秒记录；正常退出会刷新到磁盘。
+
+可用 `CC_MONITOR_DIR` 指定历史目录，`CC_MONITOR_DIR=off` 关闭持久化；`CC_MONITOR_MAX_RECORDS` 可设置 1–100000 的记录上限。Compose 默认使用 `monitor-data` 数据卷保存历史，重建容器后保留。页面会显示最早保留请求及存储异常提示。
+
+监控接口 `/monitor/api/query` 支持 `keyId`、`model`、`status`、`q`、`from`、`to`、`page`、`pageSize`；时间为带时区的 ISO 格式。`/monitor/api/export` 使用相同筛选条件导出全部匹配记录；`/monitor/api/request?id=...` 获取单条详情。导出使用页面上次成功查询的时间边界，暂停后不会悄悄移动时间范围。
+
+默认仅允许通过本机回环地址访问监控。远程、Docker 端口映射或反向代理部署时，设置独立的监控令牌，然后在页面输入该令牌：
+
+```bash
+CC_MONITOR_TOKEN='替换为随机监控令牌' npm start
+# Docker Compose 会传入同名环境变量
+CC_MONITOR_TOKEN='替换为随机监控令牌' docker compose up --build -d
+```
+
+设置令牌后，所有 `/monitor/api/*` 数据接口均需 `Authorization: Bearer <监控令牌>`，包括本机访问。浏览器只在当前页面内存中保存令牌。反向代理部署务必配置此变量，避免本机反代连接被视作本地访问。
+
+运行监控回归测试：`npm test`（使用本地模拟上游，无需真实 API Key）。
+
 ## 文件结构
 
 ```
@@ -33,13 +61,16 @@ commandcode/
 ├── config.json           # 端口 / 日志路径等
 ├── LICENSE               # MIT License
 ├── package.json          # npm start / npm run dev
-├── proxy.mjs             # 单文件核心代理（~1900 行）
+├── proxy.mjs             # 核心代理与协议转换
+├── monitor.mjs           # 请求采集、内存存储与监控路由
+├── monitor-history.mjs   # Key 脱敏、历史持久化与筛选统计
+├── monitor.html          # 中文监控页（无需前端构建）
 ├── Dockerfile            # 容器构建文件（node:22-alpine）
 ├── docker-compose.yml    # 容器编排
 ├── .dockerignore         # 构建上下文排除规则
 ├── .github/
 │   └── workflows/
-│       └── docker-publish.yml  # 打 v* tag 时自动发布 GHCR 多架构镜像
+│       └── docker-publish.yml  # master/release/v* 自动发布 GHCR 双架构镜像
 ├── captured-requests/    # CLI 抓包数据（协议逆向参考）
 ├── README.md             # 英文文档
 └── README_zh.md          # 本文档（中文）
@@ -100,7 +131,7 @@ OpenAI Chat Completions 兼容。支持流式和非流式、工具调用、多�
 | `max_tokens` | 否 | 最大生成 token（默认 64000） |
 | `stream` | 否 | 是否 SSE 流式（默认 false） |
 | `temperature` | 否 | 采样温度（0-2）|
-| `reasoning_effort` | 否 | 推理强度 `low`/`medium`/`high`/`max` |
+| `reasoning_effort` | 否 | 推理档位原值透传，例如 `low`/`medium`/`high`/`xhigh`/`max`，不自动改档 |
 | `tools` | 否 | 工具定义（OpenAI function calling 格式）|
 | `tool_choice` | 否 | 工具选择策略 |
 | `parallel_tool_calls` | 否 | 是否允许并行工具调用 |
@@ -203,7 +234,7 @@ Anthropic Messages API 兼容端点。支持流式和非流式、工具调用。
 | 工具结果 | `user` 消息中的 `tool_result` 块 | 自动转为 `role: "tool"` |
 | 工具定义 | `input_schema` | 自动映射为 `parameters` |
 | `tool_choice` | `{type:"auto"/"any"/"tool"}` | `any`→`required`，`tool`→function 对象 |
-| 推理强度 | `thinking.budget_tokens` | 自动映射为 `reasoning_effort`（≥10000→high, ≥5000→medium, ≥2000→low） |
+| 推理强度 | `reasoning_effort` / `output_config.effort` / `thinking.effort` | 按此前后优先级原值转发；仅 enabled 预算请求无显式档位时映射 `thinking.budget_tokens`（≥10000→high, ≥5000→medium, 其余→low） |
 | 停止原因 | `end_turn`/`max_tokens`/`tool_use` | 自动映射为 `stop`/`length`/`tool_calls` |
 | Token 用量 | `input_tokens`/`output_tokens` + 缓存 | 透传，缓存字段映射为 Anthropic 格式 |
 
@@ -426,14 +457,15 @@ CLI 发送图片的格式：
 
 ### 从 GHCR 拉取
 
-每次打 `v*` tag 时 GitHub Actions 会自动构建并推送多架构镜像（`linux/amd64` + `linux/arm64`）到 GitHub Container Registry：
+推送到 `master`、`release` 分支或 `v*` 标签时，GitHub Actions 会先运行测试，再构建并推送 `linux/amd64` + `linux/arm64` 多架构镜像。每次构建均使用完整的 40 位提交 ID 作为镜像标签：
 
 ```bash
-docker pull ghcr.io/maxeaglet/commandcode-proxy:latest
-docker run -d --name cc-proxy -p 3050:3050 -e PORT=3050 ghcr.io/maxeaglet/commandcode-proxy:latest
+IMAGE_TAG=$(git rev-parse HEAD)
+docker pull "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
+docker run -d --name cc-proxy -p 3050:3050 -e PORT=3050 "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
 ```
 
-每次发版都会更新 `latest` 标签。镜像为公共可见，拉取无需登录。
+同一个提交标签包含两种架构，Docker 会按主机自动选择。`release` 分支另更新 `release` 标签，`v*` 发版另更新版本与 `latest` 标签；提交标签不带 `sha-` 前缀。工作流使用仓库的 `GITHUB_TOKEN` 写入 GHCR，镜像可见性由 GitHub Packages 设置决定。
 
 ### 快速启动 (docker compose)
 

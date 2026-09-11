@@ -2,7 +2,7 @@
 
 > [中文文档](README_zh.md)
 
-A reverse proxy that converts Command Code API to OpenAI / Anthropic compatible endpoints. Single file, zero external dependencies.
+A reverse proxy that converts Command Code API to OpenAI / Anthropic compatible endpoints. Zero external dependencies, with a built-in request monitoring dashboard.
 
 Built by analyzing official CLI network traffic to accurately replicate the Command Code API request protocol, including device-fingerprint and lifecycle pre-requests.
 
@@ -26,6 +26,34 @@ curl http://127.0.0.1:3050/v1/chat/completions \
   -d '{"model":"deepseek/deepseek-v4-flash","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+## Request monitoring
+
+After starting the proxy, open **http://127.0.0.1:3050/monitor** (adjust the port if configured). The Chinese dashboard refreshes every 2 seconds and combines Key, model, status, and time filters: **1 day, 7 days, 30 days, or a custom interval** (local timezone, second precision, inclusive endpoints). Search, pagination, live details, pause/resume, and filtered JSON export are supported. Summaries and charts cover all matching records, not just the current page.
+
+- Tracks API requests, including validation failures, upstream errors, and disconnects. Health checks, OPTIONS, and monitor requests are excluded.
+- Shows input/output tokens, cache reads/writes, cache-hit requests, latency, and a usage chart for the selected interval. Cache hit rate is cached input divided by input tokens **for requests reporting both fields**. Cache writes are not hits; cached tokens are already included in input tokens and are not added again to total usage.
+- Collects raw upstream usage in all OpenAI/Anthropic streaming and non-streaming paths. Missing fields display `—`, explicit zeros display `0`; local output estimates are excluded. Failed or interrupted requests may report partial usage.
+- Each record shows forwarded reasoning effort and reasoning tokens; details include requested effort, thinking type, and budget. Reasoning tokens come from upstream `usage.reasoningTokens` or `usage.outputTokenDetails.reasoningTokens` (also under `totalUsage`), never text estimates. Missing values display `—`; explicit zero displays `0`. Reasoning is an output-token breakdown, not added again to totals. A missing forwarded effort means the field was omitted or forwarding has not started, not that the model did no reasoning.
+- Explicit effort values pass through unchanged. OpenAI uses `reasoning_effort`; Anthropic precedence is `reasoning_effort` > `output_config.effort` > `thinking.effort`, forwarded as `params.reasoning_effort`. Adaptive thinking no longer injects `medium` when effort is absent. Enabled thinking with only a budget retains compatibility mapping: ≥10000→high, ≥5000→medium, otherwise→low. Accepted effort values and availability of reasoning usage depend on the upstream provider.
+- Keys are masked after removing `user_`: first four and last four characters only, e.g. `4jGG****DZch`. Suffixes of eight or fewer characters are fully hidden. Records store the masked label and SHA-256 identity, never the full key. Distinct keys with identical visible ends remain independently selectable. Missing or unrecognized keys appear as “未提供 Key”.
+- Retains the last **30 days, up to 100,000 requests**. Finalized records are saved to project-relative `data/monitor/history-v1.json` and restored after restart. Older records are pruned at either limit; the dashboard reports retention boundaries. Prior in-memory history cannot be recovered. Active requests remain in memory; abrupt termination can lose the latest roughly one second of unsaved records. Graceful shutdown flushes history.
+
+Set `CC_MONITOR_DIR` to change the history directory, or `off` to disable persistence. `CC_MONITOR_MAX_RECORDS` accepts 1–100000. Compose uses the `monitor-data` volume, preserving history when containers are rebuilt. The dashboard shows the oldest retained request and persistence errors.
+
+`/monitor/api/query` accepts `keyId`, `model`, `status`, `q`, `from`, `to`, `page`, and `pageSize`; dates require ISO timestamps with a timezone. `/monitor/api/export` exports all matching records with the same filters; `/monitor/api/request?id=...` retrieves one record. Exports reuse the last successful query's exact date boundaries, including when paused.
+
+Monitor access defaults to loopback connections only. For remote access, Docker port forwarding, or reverse proxy deployments, set a separate monitoring token and enter it in the dashboard:
+
+```bash
+CC_MONITOR_TOKEN='replace-with-a-random-monitor-token' npm start
+# Compose forwards the same environment variable
+CC_MONITOR_TOKEN='replace-with-a-random-monitor-token' docker compose up --build -d
+```
+
+When configured, all `/monitor/api/*` data endpoints require `Authorization: Bearer <monitor-token>` for every client, including localhost. The browser stores the token only in page memory. Always configure this variable behind a reverse proxy, where a local proxy connection could otherwise be treated as local access.
+
+Run monitoring regression tests with `npm test` (local mock upstream; no real API key required).
+
 ## File Structure
 
 ```
@@ -33,13 +61,16 @@ commandcode/
 ├── config.json           # Port / log path etc.
 ├── LICENSE               # MIT License
 ├── package.json          # npm start / npm run dev
-├── proxy.mjs             # Single-file proxy core (~1900 lines)
+├── proxy.mjs             # Proxy core and protocol conversion
+├── monitor.mjs           # Request collection, bounded store, monitor routes
+├── monitor-history.mjs   # Key masking, persistence, filtering and statistics
+├── monitor.html          # Monitoring dashboard (no frontend build needed)
 ├── Dockerfile            # Container build (node:22-alpine)
 ├── docker-compose.yml    # Container orchestration
 ├── .dockerignore         # Build context exclusions
 ├── .github/
 │   └── workflows/
-│       └── docker-publish.yml  # GHCR multi-arch publish on v* tags
+│       └── docker-publish.yml  # GHCR multi-arch publish on master/release/v*
 ├── captured-requests/    # Captured CLI traffic (protocol analysis reference)
 ├── README.md             # This document (English)
 └── README_zh.md          # Chinese documentation
@@ -102,7 +133,7 @@ OpenAI Chat Completions compatible. Supports streaming, non-streaming, tool call
 | `max_tokens` | No | Max tokens to generate (default 64000) |
 | `stream` | No | SSE streaming (default false) |
 | `temperature` | No | Sampling temperature (0-2) |
-| `reasoning_effort` | No | Reasoning intensity: `low`/`medium`/`high`/`max` |
+| `reasoning_effort` | No | Passed through unchanged, e.g. `low`/`medium`/`high`/`xhigh`/`max`; no automatic clamping |
 | `tools` | No | Tool definitions (OpenAI function calling format) |
 | `tool_choice` | No | Tool selection strategy |
 | `parallel_tool_calls` | No | Allow parallel tool calls |
@@ -205,7 +236,7 @@ Anthropic Messages API compatible endpoint. Supports streaming, non-streaming, a
 | Tool results | `tool_result` blocks in `user` messages | Auto-converted to `role: "tool"` |
 | Tool definitions | `input_schema` | Auto-mapped to `parameters` |
 | `tool_choice` | `{type:"auto"/"any"/"tool"}` | `any`→`required`, `tool`→function object |
-| Reasoning | `thinking.budget_tokens` | Auto-mapped to `reasoning_effort` (≥10000→high, ≥5000→medium, ≥2000→low) |
+| Reasoning | `reasoning_effort` / `output_config.effort` / `thinking.effort` | Explicit values passed through in this precedence; only enabled thinking without explicit effort maps `budget_tokens` (≥10000→high, ≥5000→medium, otherwise→low) |
 | Stop reason | `end_turn`/`max_tokens`/`tool_use` | Auto-mapped to `stop`/`length`/`tool_calls` |
 | Token usage | `input_tokens`/`output_tokens` + cache | Passed through, cache fields mapped to Anthropic format |
 
@@ -428,14 +459,15 @@ The proxy receives OpenAI `image_url` format and converts it to the above CC for
 
 ### Pull from GHCR
 
-Pre-built multi-arch images (`linux/amd64` + `linux/arm64`) are published to the GitHub Container Registry automatically on every `v*` tag via GitHub Actions:
+Pushes to `master`, `release`, or `v*` tags run tests and publish multi-architecture images (`linux/amd64` + `linux/arm64`) via GitHub Actions. Every build is tagged with its full 40-character commit SHA:
 
 ```bash
-docker pull ghcr.io/maxeaglet/commandcode-proxy:latest
-docker run -d --name cc-proxy -p 3050:3050 -e PORT=3050 ghcr.io/maxeaglet/commandcode-proxy:latest
+IMAGE_TAG=$(git rev-parse HEAD)
+docker pull "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
+docker run -d --name cc-proxy -p 3050:3050 -e PORT=3050 "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
 ```
 
-The `latest` tag is updated on each release. The image is public — no login required to pull.
+The same commit tag includes both architectures; Docker selects the host architecture automatically. The `release` branch additionally updates `release`; `v*` tags additionally publish version and `latest` tags. Commit tags have no `sha-` prefix. The workflow uses `GITHUB_TOKEN` to publish; image visibility follows the GitHub Packages settings.
 
 ### Quick Start (docker compose)
 
