@@ -523,6 +523,19 @@ Over the limit it returns `503` + `Retry-After: 5` + `type: server_busy` — a s
 
 > ⚠️ Enabling this is **not** the same as being memory-safe: 32 × 550 MB still exceeds a small box. For a hard bound, lower `CC_MAX_BODY_MB` **as well**.
 
+## Retries after streamed reasoning
+
+For `/v1/chat/completions`, completion validity is independent of usage reporting. A formal upstream `finish` with text, reasoning, or tool output succeeds even without usage; incomplete usage is omitted rather than fabricated as zero. The proxy cancels upstream reading after `finish` instead of waiting for the HTTP connection to close.
+
+Monitor details include whether output and a formal finish were received, the last event/time, and finish reason, without retaining generated content:
+
+- `zero_output`: explicitly reported zero output. Older versions also misclassified missing usage this way; historical records cannot reveal which termination occurred.
+- `upstream_incomplete`: EOF before formal `finish`, possibly after partial reasoning/text. Reported as an error, never a fabricated complete response. Check upstream or gateway connection limits.
+- `empty_response`: formal finish without meaningful output or positive output usage.
+- `stream_timeout`: upstream read idle timeout; incoming reasoning data resets it. This is not a total request duration limit.
+
+Clients may still retry genuine upstream errors or incomplete streams. Raising `CC_STREAM_IDLE_MS` affects idle waits only; it does not fix upstream truncation or missing terminal events.
+
 ## Upstream Idle Timeouts
 
 Two upstream read idle watchdogs; on expiry the proxy returns `429` (with `retry_after`) so the SDK retries automatically:

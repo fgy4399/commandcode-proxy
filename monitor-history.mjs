@@ -4,6 +4,10 @@ import { join } from 'node:path';
 
 export const TOKEN_FIELDS = ['inputTokens', 'outputTokens', 'cachedInputTokens', 'cacheWriteTokens', 'reasoningTokens'];
 const STATUSES = new Set(['pending', 'success', 'error', 'aborted']);
+export const UPSTREAM_EVENT_TYPES = new Set(['start', 'start-step', 'text-start', 'text-delta', 'text-end',
+  'reasoning-start', 'reasoning-delta', 'reasoning-end', 'tool-input-start', 'tool-input-delta', 'tool-input-end',
+  'tool-call', 'tool-result', 'tool-error', 'provider-metadata', 'finish-step', 'finish', 'error', 'other']);
+export const UPSTREAM_FINISH_REASONS = new Set(['stop', 'length', 'tool-calls', 'tool_calls', 'error', 'content-filter', 'other', 'unknown']);
 const text = (value, limit) => typeof value === 'string' ? Buffer.from(value.slice(0, limit)).toString() : null;
 const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0
   ? Math.min(value, Number.MAX_SAFE_INTEGER) : null;
@@ -41,7 +45,12 @@ export function sanitizeFinalRecord(value) {
     thinkingType: text(value.thinkingType, 64), thinkingBudgetTokens: number(value.thinkingBudgetTokens),
     keyId: keyLabel === null ? null : keyId, keyLabel,
     usageReported: value.usageReported === true,
-    error: typeof value.error === 'string' && /^(?:http_[45]\d\d|invalid_request_error|auth_error|authentication_error|rate_limit_error|not_found|upstream_error|temporarily_unavailable|proxy_error|internal_error|server_busy|stream_timeout|stream_error|zero_output)$/.test(value.error) ? value.error : null,
+    upstreamFinishReceived: typeof value.upstreamFinishReceived === 'boolean' ? value.upstreamFinishReceived : null,
+    hasUpstreamOutput: typeof value.hasUpstreamOutput === 'boolean' ? value.hasUpstreamOutput : null,
+    lastUpstreamEvent: UPSTREAM_EVENT_TYPES.has(value.lastUpstreamEvent) ? value.lastUpstreamEvent : null,
+    lastUpstreamEventAt: date(value.lastUpstreamEventAt),
+    upstreamFinishReason: UPSTREAM_FINISH_REASONS.has(value.upstreamFinishReason) ? value.upstreamFinishReason : null,
+    error: typeof value.error === 'string' && /^(?:http_[45]\d\d|invalid_request_error|auth_error|authentication_error|rate_limit_error|not_found|upstream_error|temporarily_unavailable|proxy_error|internal_error|server_busy|stream_timeout|stream_error|zero_output|empty_response|upstream_incomplete)$/.test(value.error) ? value.error : null,
   };
   for (const field of TOKEN_FIELDS) record[field] = number(value[field]);
   return record;

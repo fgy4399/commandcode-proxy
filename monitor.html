@@ -48,6 +48,13 @@ const number = value => value == null ? '—' : nf.format(value);
 const short = value => value == null ? '—' : value >= 1e6 ? (value / 1e6).toFixed(2) + 'M' : value >= 1e4 ? (value / 1e3).toFixed(1) + 'K' : nf.format(value);
 const duration = ms => ms == null ? '—' : ms < 1000 ? Math.round(ms) + ' ms' : (ms / 1000).toFixed(2) + ' s';
 const labels = {pending: '进行中', success: '成功', error: '失败', aborted: '已断开'};
+const terminationNotes = {
+  zero_output: '零输出判定。旧版也可能因缺少用量而误报；请结合输出与结束标记判断。',
+  empty_response: '上游已结束，但没有有效内容，也未报告正的输出用量。',
+  upstream_incomplete: '上游连接在正式 finish 事件前结束，收到的内容可能不完整。',
+  stream_timeout: '等待上游新数据超过空闲时限；不是整个请求的总时长限制。',
+};
+const yesNo = value => value == null ? '—（旧记录未采集）' : value ? '是' : '否';
 const state = {data: null, queryParams: null, page: 1, paused: false, token: '', timer: null, debounce: null, controller: null, detailController: null, selectedId: null, exporting: false};
 const pageSize = 15;
 function localInputValue(time) {
@@ -188,7 +195,7 @@ function renderRows(rows) {
 }
 
 function renderDetail(r) {
-  $('detail-status').textContent = '';
+  $('detail-status').textContent = terminationNotes[r.error] || '';
   $('detail-content').replaceChildren();
   const values = {
     '请求 ID': r.id, '开始时间': new Date(r.startedAt).toLocaleString('zh-CN'),
@@ -201,6 +208,9 @@ function renderDetail(r) {
     '输入 Token': number(r.inputTokens), '输出 Token': number(r.outputTokens),
     '推理 Token': number(r.reasoningTokens),
     '缓存读取': number(r.cachedInputTokens), '缓存写入': number(r.cacheWriteTokens), '错误类型': r.error || '—',
+    '收到上游输出': yesNo(r.hasUpstreamOutput), '收到正式结束': yesNo(r.upstreamFinishReceived),
+    '上游结束原因': r.upstreamFinishReason ?? '—', '最后上游事件': r.lastUpstreamEvent ?? '—',
+    '最后事件时间': r.lastUpstreamEventAt ? new Date(r.lastUpstreamEventAt).toLocaleString('zh-CN') : '—',
   };
   for (const [key, value] of Object.entries(values)) {
     const dt = document.createElement('dt'), dd = document.createElement('dd');

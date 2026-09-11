@@ -9,6 +9,7 @@ import { readFileSync, existsSync, appendFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createMonitorStore, createMonitorHandler, requestPath, maskApiKey } from './monitor.mjs';
+import { createCompletionState } from './completion-state.mjs';
 
 // ── 配置加载 ──────────────────────────────────────
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -607,17 +608,18 @@ function tryParseJSON(str) {
 
 function createSseTranslator(model, completionId, created, monitor) {
   let chunkIndex = 0;
-  let sentRole = false;
-  let finishReason = null;
-  let usage = null;
+  const state = createCompletionState();
   let toolCallIndex = 0;
 
   return {
-    lastCcEvent: '',
-    upstreamError: null,
-    inputTokens: 0,
-    outputTokens: 0,
-    cachedInputTokens: 0,
+    state,
+    get lastCcEvent() { return state.lastEvent; },
+    get upstreamError() {
+      return state.errorEvent ? mapCcEventError(state.errorEvent) : null;
+    },
+    get inputTokens() { return state.inputTokens; },
+    get outputTokens() { return state.outputTokens; },
+    get cachedInputTokens() { return state.cachedInputTokens; },
     /** 解析一行 NDJSON，返回 OpenAI chunk 数组 */
     parseLine(line) {
       const trimmed = line.trim();
@@ -626,8 +628,8 @@ function createSseTranslator(model, completionId, created, monitor) {
       let event;
       try { event = JSON.parse(trimmed); } catch { return null; }
       monitor?.observeEvent(event);
-      if (!event.type) return null;
-      this.lastCcEvent = event.type;
+      state.observe(event);
+      if (!event?.type) return null;
 
       const out = [];
 
@@ -644,13 +646,12 @@ function createSseTranslator(model, completionId, created, monitor) {
           if (!text) break;
           const delta = chunkIndex === 0 ? { role: 'assistant', content: text } : { content: text };
           chunkIndex++;
-          sentRole = true;
           out.push(makeChunk(completionId, created, model, delta, null, null));
           break;
         }
 
         case 'reasoning-delta': {
-          const text = event.text || '';
+          const text = event.text || event.delta || '';
           if (!text) break;
           const delta = chunkIndex === 0
             ? { role: 'assistant', reasoning_content: text }
@@ -674,38 +675,14 @@ function createSseTranslator(model, completionId, created, monitor) {
           break;
         }
 
-        case 'finish-step': {
-          if (event.finishReason) finishReason = mapFinishReason(event.finishReason);
-          if (event.usage) {
-            usage = event.usage;
-            this.inputTokens = event.usage.inputTokens ?? 0;
-            this.outputTokens = event.usage.outputTokens ?? 0;
-            this.cachedInputTokens = event.usage.cachedInputTokens ?? 0;
-          }
+        case 'finish-step':
+        case 'finish':
+          // The handler validates the complete state before emitting a terminal chunk.
           break;
-        }
-
-        case 'finish': {
-          const fr = finishReason || mapFinishReason(event.finishReason || 'stop');
-          const u = event.totalUsage || event.usage || usage || {};
-          normalizeUsage(u);
-          this.inputTokens = u.inputTokens ?? 0;
-          this.outputTokens = u.outputTokens ?? 0;
-          this.cachedInputTokens = u.cachedInputTokens ?? 0;
-          const openaiUsage = u ? {
-            prompt_tokens: u.inputTokens ?? 0,
-            completion_tokens: u.outputTokens ?? 0,
-            total_tokens: (u.inputTokens ?? 0) + (u.outputTokens ?? 0),
-            prompt_tokens_details: { cached_tokens: u.cachedInputTokens ?? 0 },
-          } : undefined;
-          out.push(makeChunk(completionId, created, model, {}, fr, openaiUsage));
-          break;
-        }
 
         case 'error': {
           const msg = event.error?.message || event.message || 'Unknown error';
           log('warn', 'CC stream error', { message: msg });
-          this.upstreamError = mapCcEventError(event);
           // Don't emit a finish_reason chunk — let the natural stream termination
           // handle it. Otherwise a subsequent finish(tool_calls) would be ignored
           // by downstream agent loops that stop at the first finish_reason.
@@ -721,6 +698,11 @@ function createSseTranslator(model, completionId, created, monitor) {
       }
 
       return out.length > 0 ? out : null;
+    },
+
+    getFinishEvent() {
+      return makeChunk(completionId, created, model, {},
+        mapFinishReason(state.finishReason || 'stop'), state.openAIUsage());
     },
 
     /** 获取 SSE 结束标记 */
@@ -746,11 +728,27 @@ function makeChunk(id, created, model, delta, finishReason, usage) {
 // - outputTokens=0 → zero everything (anti false billing)
 function normalizeUsage(u) {
   if (!u) return;
-  const ot = Number(u.outputTokens);
-  if (!ot) {  // 0, null, undefined, NaN → zero input + cached (anti false billing)
+  if (u.outputTokens === 0) {  // Only an explicit numeric zero triggers anti false billing.
     u.inputTokens = 0;
     u.cachedInputTokens = 0;
   }
+}
+
+function completionError(state, monitor) {
+  const code = state.rejection();
+  if (!code) return null;
+  log('warn', 'OpenAI completion rejected', { code, ...state.diagnostics() });
+  if (state.errorEvent) return mapCcEventError(state.errorEvent);
+  monitor?.markError(code);
+  if (code === 'zero_output') {
+    return { status: 429, body: { error: {
+      message: 'Empty response from upstream (zero output tokens)', type: 'rate_limit_error',
+    }, retry_after: 10 } };
+  }
+  const message = code === 'upstream_incomplete' ? 'Upstream response ended without a finish event'
+    : code === 'empty_response' ? 'Upstream finished without output'
+    : 'Upstream reported an error finish';
+  return { status: 502, body: { error: { message, type: code, code } } };
 }
 
 function mapFinishReason(reason) {
@@ -1017,9 +1015,9 @@ async function handleChatCompletions(req, res) {
       path: '/v1/chat/completions', model, completionId, streaming: stream,
       elapsedMs: Date.now() - startTime, bytesSent: bytesReceived,
       lastCcEvent: lastCcEvent || '(none)', keepaliveCount,
-      inputTokens: translator?.inputTokens ?? 0,
-      outputTokens: translator?.outputTokens ?? 0,
-      cachedInputTokens: translator?.cachedInputTokens ?? 0,
+      inputTokens: translator?.inputTokens ?? null,
+      outputTokens: translator?.outputTokens ?? null,
+      cachedInputTokens: translator?.cachedInputTokens ?? null,
     });
   };
   res.once('close', onDisconnect);
@@ -1085,6 +1083,12 @@ async function handleChatCompletions(req, res) {
               hadOutput = true;
             }
             if (translator.lastCcEvent) lastCcEvent = translator.lastCcEvent;
+            if (translator.state.sawFinish || translator.state.errorEvent) break;
+          }
+          if (translator.state.sawFinish || translator.state.errorEvent) {
+            idle.dispose();
+            void reader.cancel().catch(() => {});
+            break;
           }
           // silent events 期间发 keepalive，防止客户端超时断开
           if (started && !hadOutput) {
@@ -1098,7 +1102,7 @@ async function handleChatCompletions(req, res) {
           consecutiveTimeouts = 0;
           buffer += decoder.decode();
           // 处理剩余 buffer
-          if (buffer.trim()) {
+          if (!translator.state.sawFinish && !translator.state.errorEvent && buffer.trim()) {
             const events = translator.parseLine(buffer);
             if (events) {
               if (!started) {
@@ -1112,21 +1116,13 @@ async function handleChatCompletions(req, res) {
               await waitDrain(res);
             }
           }
-          if (translator.upstreamError) {
+          const rejected = completionError(translator.state, res.monitor);
+          if (rejected) {
             if (!started) {
-              sendJSON(res, translator.upstreamError.status, translator.upstreamError.body);
+              sendJSON(res, rejected.status, rejected.body);
               return;
             }
-            try { res.write(`data: ${JSON.stringify(translator.upstreamError.body)}\n\n`); } catch {}
-          // 输出 token 为 0 时记为错误，避免下游异常计费
-          } else if (translator.outputTokens === 0) {
-            res.monitor?.markError('zero_output');
-            try { if (!abortController.signal.aborted) abortController.abort(); } catch {}
-            if (!started) {
-              sendJSON(res, 429, { error: { message: 'Empty response from upstream (zero output tokens)', type: 'rate_limit_error' }, retry_after: 10 });
-              return;
-            }
-            try { res.write(`data: ${JSON.stringify({ error: { message: 'Empty response from upstream (zero output tokens)', type: 'rate_limit_error' }, retry_after: 10 })}\n\n`); } catch {}
+            try { res.write(`data: ${JSON.stringify(rejected.body)}\n\n`); } catch {}
           } else {
             if (!started) {
               res.writeHead(200, {
@@ -1137,6 +1133,7 @@ async function handleChatCompletions(req, res) {
               });
               started = true;
             }
+            res.write(translator.getFinishEvent());
             res.write(translator.getDoneEvent());
           }
         }
@@ -1193,10 +1190,8 @@ async function handleChatCompletions(req, res) {
     } else {
       // ── 非流式响应（缓冲完整 NDJSON）──
       let reasoningContent = '';
-      let finishReason = 'stop';
-      let usage = null;
+      const state = createCompletionState();
       let toolCalls = null;
-      let upstreamError = null;
 
       reader = ccResponse.body.getReader();
       const decoder = new TextDecoder();
@@ -1206,14 +1201,17 @@ async function handleChatCompletions(req, res) {
         const lines = buf.split('\n');
         buf = lines.pop() || '';
         for (const line of lines) {
+          if (state.sawFinish || state.errorEvent) break;
           const trimmed = line.trim();
           if (!trimmed || trimmed === '[DONE]' || trimmed.startsWith(':')) continue;
           try {
             const event = JSON.parse(trimmed);
             res.monitor?.observeEvent(event);
+            state.observe(event);
+            lastCcEvent = state.lastEvent || '';
             switch (event.type) {
-              case 'text-delta': lastCcEvent = event.type; fullText += event.text || ''; break;
-              case 'reasoning-delta': lastCcEvent = event.type; reasoningContent += event.text || ''; break;
+              case 'text-delta': fullText += event.text || event.delta || ''; break;
+              case 'reasoning-delta': reasoningContent += event.text || event.delta || ''; break;
               case 'tool-call':
                 lastCcEvent = event.type;
                 toolCalls = toolCalls || [];
@@ -1227,18 +1225,11 @@ async function handleChatCompletions(req, res) {
                 });
                 break;
               case 'finish-step':
-                if (event.usage) usage = event.usage;
-                if (event.finishReason) finishReason = mapFinishReason(event.finishReason);
-                break;
               case 'finish':
-                lastCcEvent = event.type;
-                finishReason = mapFinishReason(event.finishReason || 'stop');
-                if (event.totalUsage || event.usage) usage = event.totalUsage || event.usage;
                 break;
               case 'error':
                 lastCcEvent = event.type;
                 log('warn', 'CC stream error (non-stream)', { message: event.error?.message || event.message });
-                upstreamError = mapCcEventError(event);
                 break;
               case 'reasoning-end': case 'provider-metadata': case 'tool-input-start': case 'tool-input-delta': case 'tool-input-end': case 'tool-error': case 'text-end':
                 // Silent - no user-visible content
@@ -1262,23 +1253,23 @@ async function handleChatCompletions(req, res) {
           buf += chunkText;
           // 无换行则不可能产生完整行，跳过全量 split（见 handleChatCompletions 流式段同处说明）
           if (chunkText.indexOf('\n') !== -1) processLines();
+          if (state.sawFinish || state.errorEvent) {
+            idle.dispose();
+            void reader.cancel().catch(() => {});
+            break;
+          }
         }
       } finally {
         idle.dispose();
       }
-      buf += decoder.decode() + '\n';
-      processLines();
-
-      if (upstreamError) {
-        sendJSON(res, upstreamError.status, upstreamError.body);
-        return;
+      if (!state.sawFinish && !state.errorEvent) {
+        buf += decoder.decode() + '\n';
+        processLines();
       }
 
-      // 输出 token 为 0 时记为错误，避免下游异常计费
-      if ((usage?.outputTokens ?? 0) === 0) {
-        res.monitor?.markError('zero_output');
-        try { if (!abortController.signal.aborted) abortController.abort(); } catch {}
-        sendJSON(res, 429, { error: { message: 'Empty response from upstream (zero output tokens)', type: 'rate_limit_error' }, retry_after: 10 });
+      const rejected = completionError(state, res.monitor);
+      if (rejected) {
+        sendJSON(res, rejected.status, rejected.body);
         return;
       }
 
@@ -1295,18 +1286,9 @@ async function handleChatCompletions(req, res) {
             toolCalls ? { tool_calls: toolCalls } : {},
             reasoningContent ? { reasoning_content: reasoningContent } : {},
           ),
-          finish_reason: finishReason,
+          finish_reason: mapFinishReason(state.finishReason || 'stop'),
         }],
-    usage: (() => {
-      if (!usage) usage = {};
-      normalizeUsage(usage);
-      return {
-        prompt_tokens: usage.inputTokens ?? 0,
-        completion_tokens: usage.outputTokens ?? 0,
-        total_tokens: (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0),
-        prompt_tokens_details: { cached_tokens: usage.cachedInputTokens ?? 0 },
-      };
-    })(),
+        usage: state.openAIUsage(),
       });
     }
   } catch (e) {
@@ -1344,6 +1326,7 @@ async function handleChatCompletions(req, res) {
       sendJSON(res, 502, { error: { message: `Upstream error: ${e.message}`, type: 'proxy_error', input_tokens: 0 }, retry_after: 10 });
     }
   } finally {
+    try { void reader?.cancel().catch(() => {}); } catch {}
     res.off('close', onDisconnect);
   }
 }

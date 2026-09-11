@@ -29,6 +29,28 @@ async function fixture(t, extraEnv = {}) {
     res.setHeader('Content-Type', 'application/x-ndjson');
     const event = value => res.write(JSON.stringify(value) + '\n');
     if (model === 'hold') { event({ type: 'start' }); return; }
+    if (model === 'finish-tail' || model === 'step-error') {
+      res.end([
+        {type: 'reasoning-delta', text: 'thinking'},
+        ...(model === 'step-error' ? [{type: 'finish-step', finishReason: 'error'}] : []),
+        {type: 'finish', finishReason: 'stop', totalUsage: usage},
+        ...(model === 'finish-tail' ? [{type: 'error', message: 'ignored after finish'}, {type: 'text-delta', text: 'must-not-forward'}] : []),
+      ].map(value => JSON.stringify(value)).join('\n') + '\n');
+      return;
+    }
+    if (['long-reasoning-no-usage', 'reasoning-truncated', 'step-truncated', 'finish-open', 'empty-finished', 'partial-usage', 'reasoning-zero'].includes(model)) {
+      if (model !== 'empty-finished') event({ type: 'reasoning-delta', text: 'private-thinking-content' });
+      if (model === 'long-reasoning-no-usage') {
+        for (let i = 0; i < 8; i++) { await delay(40); event({ type: 'reasoning-delta', text: 'continuing thinking' }); }
+      }
+      if (model === 'step-truncated') event({ type: 'finish-step', usage });
+      if (model === 'reasoning-truncated' || model === 'step-truncated') { res.end(); return; }
+      event({ type: 'finish', finishReason: model === 'long-reasoning-no-usage' ? 'length' : 'stop',
+        ...(model === 'partial-usage' ? { totalUsage: {inputTokens: 120} } : {}),
+        ...(model === 'reasoning-zero' ? { totalUsage: {...usage, outputTokens: 0} } : {}) });
+      if (model !== 'finish-open') res.end();
+      return;
+    }
     event({ type: 'text-delta', text: 'private-response-content' });
     if (model === 'stream-error') { event({ type: 'error', message: '<429> secret-upstream-response' }); res.end(); return; }
     if (model === 'timeout') return;
@@ -330,4 +352,88 @@ test('shutdown has a bounded drain deadline for active streams', { timeout: 1000
   assert.equal(signal, null);
   assert.ok(Date.now() - started < 8000);
   await pending;
+});
+
+test('OpenAI thinking completion distinguishes unknown usage, zero and truncated streams', { timeout: 20000 }, async t => {
+  const f = await fixture(t);
+  function sseEvents(body) {
+    return body.split('\n').filter(line => line.startsWith('data: ') && line !== 'data: [DONE]').map(line => JSON.parse(line.slice(6)));
+  }
+  for (const stream of [true, false]) {
+    for (const model of ['long-reasoning-no-usage', 'unreported', 'partial-usage', 'finish-open']) {
+      await t.test(`${model} stream=${stream}: completed content needs no fabricated usage`, async () => {
+        const {response, body} = await f.request('/v1/chat/completions', model, stream);
+        assert.equal(response.status, 200, body);
+        const record = (await f.snapshot()).requests[0];
+        assert.equal(record.status, 'success', body);
+        assert.equal(record.upstreamFinishReceived, true);
+        assert.equal(record.hasUpstreamOutput, true);
+        assert.equal(record.outputTokens, null);
+        assert.equal(record.lastUpstreamEvent, 'finish');
+        if (model === 'partial-usage') assert.equal(record.inputTokens, 120);
+        else assert.equal(record.usageReported, false);
+        const finishReason = model === 'long-reasoning-no-usage' ? 'length' : 'stop';
+        if (stream) {
+          assert.match(body, /data: \[DONE\]/);
+          const events = sseEvents(body);
+          assert.ok(events.every(event => !event.error && !Object.hasOwn(event, 'usage')));
+          assert.equal(events.at(-1).choices[0].finish_reason, finishReason);
+          if (model === 'long-reasoning-no-usage') assert.equal(events.filter(event => event.choices[0].delta.reasoning_content).length, 9);
+        } else {
+          const result = JSON.parse(body);
+          assert.equal(result.choices[0].finish_reason, finishReason);
+          assert.equal(Object.hasOwn(result, 'usage'), false);
+          if (model !== 'unreported') assert.match(result.choices[0].message.reasoning_content, /private-thinking-content/);
+        }
+      });
+    }
+    for (const model of ['reasoning-truncated', 'step-truncated', 'empty-finished', 'reasoning-zero']) {
+      await t.test(`${model} stream=${stream}: report the actual terminal failure`, async () => {
+        const {response, body} = await f.request('/v1/chat/completions', model, stream);
+        const record = (await f.snapshot()).requests[0];
+        const expected = model === 'reasoning-zero' ? 'zero_output' : model === 'empty-finished' ? 'empty_response' : 'upstream_incomplete';
+        assert.equal(record.status, 'error');
+        assert.equal(record.error, expected, body);
+        assert.equal(record.upstreamFinishReceived, ['empty-finished', 'reasoning-zero'].includes(model));
+        assert.equal(record.hasUpstreamOutput, model !== 'empty-finished');
+        assert.doesNotMatch(body, /data: \[DONE\]/);
+        if (stream && response.headers.get('content-type')?.includes('event-stream')) {
+          const events = sseEvents(body);
+          assert.ok(events.some(event => event.error));
+          assert.ok(events.every(event => !event.choices?.[0]?.finish_reason), 'failed stream must not first emit successful finish');
+        } else {
+          assert.ok(response.status >= 400);
+          assert.ok(JSON.parse(body).error);
+        }
+        if (model === 'reasoning-truncated') {
+          assert.equal(record.outputTokens, null);
+          assert.equal(record.lastUpstreamEvent, 'reasoning-delta');
+        }
+      });
+    }
+  }
+});
+
+test('OpenAI terminal boundaries and nested usage are stable across protocols', {timeout: 10000}, async t => {
+  const f = await fixture(t);
+  for (const stream of [true, false]) {
+    for (const model of ['reported', 'cache-details', 'finish-tail', 'step-error']) {
+      const {response, body} = await f.request('/v1/chat/completions', model, stream);
+      const r = (await f.snapshot()).requests[0];
+      if (model === 'step-error') {
+        assert.equal(r.status, 'error');
+        assert.equal(r.error, 'upstream_error');
+        assert.doesNotMatch(body, /data: \[DONE\]/);
+        continue;
+      }
+      assert.equal(response.status, 200);
+      assert.equal(r.status, 'success');
+      assert.doesNotMatch(body, /must-not-forward|ignored after finish/);
+      const result = stream
+        ? body.split('\n').filter(line => line.startsWith('data: {')).map(line => JSON.parse(line.slice(6))).find(event => event.usage)
+        : JSON.parse(body);
+      assert.equal(result.usage.prompt_tokens_details.cached_tokens, 80);
+      if (model !== 'cache-details') assert.equal(result.usage.completion_tokens_details.reasoning_tokens, 10);
+    }
+  }
 });

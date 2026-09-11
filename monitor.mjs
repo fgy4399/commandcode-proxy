@@ -2,14 +2,14 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { apiKeyIdentity, createSnapshotPersistence, sanitizeFinalRecord,
-  parseMonitorFilters, filterMonitorRequests, queryMonitorSnapshot } from './monitor-history.mjs';
+  parseMonitorFilters, filterMonitorRequests, queryMonitorSnapshot, UPSTREAM_EVENT_TYPES, UPSTREAM_FINISH_REASONS } from './monitor-history.mjs';
 export { maskApiKey, apiKeyIdentity, parseMonitorFilters, filterMonitorRequests, queryMonitorSnapshot } from './monitor-history.mjs';
 
 export const RETENTION_LIMIT = 1000;
 const TOKEN_FIELDS = ['inputTokens', 'outputTokens', 'cachedInputTokens', 'cacheWriteTokens', 'reasoningTokens'];
 const SAFE_ERRORS = new Set(['invalid_request_error', 'auth_error', 'authentication_error',
   'rate_limit_error', 'not_found', 'upstream_error', 'temporarily_unavailable', 'proxy_error',
-  'internal_error', 'server_busy', 'stream_timeout', 'stream_error', 'zero_output']);
+  'internal_error', 'server_busy', 'stream_timeout', 'stream_error', 'zero_output', 'empty_response', 'upstream_incomplete']);
 // Copy the prefix: V8 sliced strings can otherwise keep a large request body alive.
 const bounded = (value, limit) => typeof value === 'string'
   ? Buffer.from(value.slice(0, limit), 'utf8').toString('utf8') : null;
@@ -143,6 +143,8 @@ export function createMonitorStore({ now = Date.now, retentionLimit = RETENTION_
         inputTokens: null, outputTokens: null, cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null,
         usageReported: false, error: null,
         keyId: null, keyLabel: null,
+        upstreamFinishReceived: false, hasUpstreamOutput: false,
+        lastUpstreamEvent: null, lastUpstreamEventAt: null, upstreamFinishReason: null,
       } };
       if (!requests.length || started >= Date.parse(requests[0].record.startedAt)) requests.unshift(entry);
       else {
@@ -206,6 +208,18 @@ export function createMonitorStore({ now = Date.now, retentionLimit = RETENTION_
         observeEvent(event) {
           const record = entry.record;
           if (!record || finalized || !event || typeof event !== 'object') return;
+          if (typeof event.type === 'string') {
+            record.lastUpstreamEvent = UPSTREAM_EVENT_TYPES.has(event.type) ? event.type : 'other';
+            record.lastUpstreamEventAt = new Date(now()).toISOString();
+          }
+          if (event.type === 'tool-call' || (['text-delta', 'reasoning-delta'].includes(event.type)
+              && [event.text, event.delta].some(value => typeof value === 'string' && value.length > 0))) {
+            record.hasUpstreamOutput = true;
+          }
+          if (event.type === 'finish') {
+            record.upstreamFinishReceived = true;
+            record.upstreamFinishReason = UPSTREAM_FINISH_REASONS.has(event.finishReason) ? event.finishReason : 'unknown';
+          }
           if (event.type === 'error') tracker.markError('upstream_error');
           if ((event.type === 'finish' || event.type === 'finish-step') && event.finishReason === 'error') {
             tracker.markError('upstream_error');

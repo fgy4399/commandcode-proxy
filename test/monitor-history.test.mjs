@@ -29,6 +29,8 @@ function record(id, overrides = {}) {
     thinkingBudgetTokens: null, keyId: null, keyLabel: null,
     usageReported: false, error: null, inputTokens: null, outputTokens: null,
     cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null,
+    upstreamFinishReceived: null, hasUpstreamOutput: null,
+    lastUpstreamEvent: null, lastUpstreamEventAt: null, upstreamFinishReason: null,
     ...overrides,
   };
 }
@@ -346,4 +348,26 @@ test('export helper applies filters across pages and exports only safe key ident
   assertNoSecrets(exported);
   assert.equal(store.export(params({ q: KEY_A })).requests.length, 0);
   assert.equal(store.export(params({ q: '4jGG****DZch' })).requests.length, 4);
+});
+
+test('stream diagnostics survive restart without retaining reasoning text', async t => {
+  const fixture = await temporaryHistory(t), store = fixture.store();
+  await store.initialize();
+  const active = track(store, {finish: false});
+  active.tracker.observeEvent({type: 'reasoning-delta', text: 'private-thinking-never-persist'});
+  active.tracker.markError('upstream_incomplete');
+  active.res.emit('finish');
+  await store.flush();
+  const reloaded = fixture.store();
+  await reloaded.initialize();
+  const r = reloaded.getRequest(active.id);
+  assert.equal(r.hasUpstreamOutput, true);
+  assert.equal(r.upstreamFinishReceived, false);
+  assert.equal(r.lastUpstreamEvent, 'reasoning-delta');
+  assert.equal(r.lastUpstreamEventAt, iso(NOW));
+  assert.equal(r.error, 'upstream_incomplete');
+  assert.doesNotMatch(await readFile(join(fixture.directory, 'history-v1.json'), 'utf8'), /private-thinking-never-persist/);
+  const old = sanitizeFinalRecord(record('legacy'));
+  assert.equal(old.upstreamFinishReceived, null);
+  assert.equal(old.hasUpstreamOutput, null);
 });

@@ -1,6 +1,6 @@
 FROM node:22-alpine
 WORKDIR /app
-COPY package.json proxy.mjs monitor.mjs monitor-history.mjs monitor.html ./
+COPY package.json proxy.mjs completion-state.mjs monitor.mjs monitor-history.mjs monitor.html ./
 ENV PORT=3050
 EXPOSE 3050
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
