@@ -79,3 +79,22 @@ export function createCompletionState() {
     },
   };
 }
+
+// CC/OpenAI input is inclusive; Anthropic's three input buckets are disjoint.
+// Do not mutate the raw usage retained by monitoring.
+export function toAnthropicInputUsage(usage) {
+  const total = reportedCount(usage, 'inputTokens');
+  let read = reportedCount(usage, 'cachedInputTokens') ?? 0;
+  let write = isCount(usage?.cacheWriteTokens) ? usage.cacheWriteTokens
+    : isCount(usage?.inputTokenDetails?.cacheWriteTokens) ? usage.inputTokenDetails.cacheWriteTokens : 0;
+  if (total !== null) {
+    // Inconsistent provider details must neither create negative input nor exceed the total.
+    read = Math.min(read, total);
+    write = Math.min(write, total - read);
+  }
+  return {
+    input_tokens: total === null ? 0 : Math.max(0, total - read - write),
+    cache_read_input_tokens: read,
+    cache_creation_input_tokens: write,
+  };
+}

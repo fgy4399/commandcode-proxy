@@ -34,7 +34,7 @@
 <p id="stats-scope" class="subtitle" style="margin-bottom:12px" role="status">模型统计仅包含两个生成接口的 POST 请求；其他路径保留在日志中。</p>
 <section class="stats" aria-label="请求统计">
 <div class="card stat"><div class="stat-title">模型请求数<span class="stat-icon">↗</span></div><div id="total" class="stat-value">0</div><div class="stat-note"><span>成功 <b id="success">0</b></span><span>失败 <b id="errors">0</b></span><span>进行中 <b id="pending">0</b></span></div></div>
-<div class="card stat"><div class="stat-title">Token 总用量<span class="stat-icon">T</span></div><div id="tokens" class="stat-value">—</div><div class="stat-note"><span>输入 <b id="input">—</b></span><span>输出 <b id="output">—</b></span><span title="上游报告的输出 Token 明细，不重复加入总用量">其中推理 <b id="reasoning">—</b></span></div></div>
+<div class="card stat"><div class="stat-title" title="所选范围内模型请求的输入总量加输出，缓存和推理明细不重复加总">Token 累计用量<span class="stat-icon">T</span></div><div id="tokens" class="stat-value">—</div><div class="stat-note"><span title="已包含缓存读取与写入，不是 Anthropic 的未缓存 input_tokens">输入（含缓存）<b id="input">—</b></span><span>输出 <b id="output">—</b></span><span title="上游报告的输出 Token 明细，不重复加入总用量">其中推理 <b id="reasoning">—</b></span></div></div>
 <div class="card stat"><div class="stat-title">缓存命中率<span class="stat-icon">◈</span></div><div id="cache-rate" class="stat-value accent">—</div><div class="stat-note"><span>缓存读取 <b id="cached">—</b> Token</span></div></div>
 <div class="card stat"><div class="stat-title">模型平均耗时<span class="stat-icon">◷</span></div><div id="latency" class="stat-value">—</div><div class="stat-note"><span>成功率 <b id="success-rate">—</b></span><span title="失败及断开数 ÷ 已结束模型请求数；不含其他路径">失败率 <b id="failure-rate">—</b></span></div></div>
 </section>
@@ -42,7 +42,7 @@
 <section class="card cache-panel"><div class="panel-head"><h2>缓存利用情况</h2><span class="subtle">上游报告</span></div><div class="cache-content"><div id="ring" class="ring"><div class="ring-inner"><span id="ring-rate" class="ring-value">—</span><span class="ring-label">输入命中率</span></div></div><div class="cache-breakdown"><div class="breakdown-row"><span>缓存读取</span><b id="cache-read">—</b></div><div class="breakdown-row"><span>缓存写入</span><b id="cache-write">—</b></div><div class="breakdown-row"><span>命中请求</span><b id="cache-hits">0</b></div></div></div><div class="cache-foot">缓存读取 Token ÷ 同批请求的输入 Token；写入不计作命中</div></section></div>
 <section class="card"><div class="logs-head"><h2>请求日志 <span id="log-count" class="count">0 条</span></h2><span id="updated" class="subtle" aria-live="off">等待首次同步</span></div>
 <div id="history-note" class="history-note">正在读取历史记录…</div>
-<div class="table-scroll"><table><thead><tr><th>请求时间 / ID</th><th>Key</th><th title="直连来源，或可信代理传来的客户端地址；不保证总是公网地址">来源 IP</th><th>模型 / 接口</th><th>状态</th><th>模式</th><th title="实际发往上游的推理档位；原始请求档位见详情">转发档位</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num" title="输出 Token 的推理明细，上游未报告时显示 —">推理 Token</th><th class="num">缓存读取</th><th class="num">耗时</th><th aria-label="操作"></th></tr></thead><tbody id="rows"></tbody></table></div><div class="table-foot"><span id="coverage">— 表示上游未报告用量</span><div class="pagination"><span id="page-info">第 1 / 1 页</span><button id="prev" aria-label="上一页">←</button><button id="next" aria-label="下一页">→</button></div></div></section>
+<div class="table-scroll"><table><thead><tr><th>请求时间 / ID</th><th>Key</th><th title="直连来源，或可信代理传来的客户端地址；不保证总是公网地址">来源 IP</th><th>模型 / 接口</th><th>状态</th><th>模式</th><th title="实际发往上游的推理档位；原始请求档位见详情">转发档位</th><th class="num" title="输入总量已包含缓存读取和写入">输入（含缓存）</th><th class="num">输出 Token</th><th class="num" title="输出 Token 的推理明细，上游未报告时显示 —">推理 Token</th><th class="num">缓存读取</th><th class="num">耗时</th><th aria-label="操作"></th></tr></thead><tbody id="rows"></tbody></table></div><div class="table-foot"><span id="coverage">— 表示上游未报告用量</span><div class="pagination"><span id="page-info">第 1 / 1 页</span><button id="prev" aria-label="上一页">←</button><button id="next" aria-label="下一页">→</button></div></div></section>
 <footer class="footer"><span id="retention">最近 30 天历史 · Key 仅保留脱敏标识 · 不记录对话内容</span><span>每 2 秒刷新 · 所有统计随筛选条件变化</span></footer>
 </main></div>
 <dialog id="detail"><header><h2>请求详情</h2><button id="close-detail" aria-label="关闭详情">✕</button></header><p id="detail-status" class="subtle" role="status"></p><dl id="detail-content"></dl><p class="dialog-note">Key 去掉 user_ 后仅显示前 4 位与后 4 位，中间隐藏。Token 仅采集上游报告值，— 表示未报告；失败或中断的请求可能只有部分用量。缓存读取包含在输入 Token 中，推理 Token 属于输出明细，均不重复加入总量。转发档位 — 表示未转发该字段或请求尚未发往上游。</p></dialog>
@@ -219,7 +219,9 @@ function renderDetail(r) {
     '客户端档位': r.requestedReasoningEffort ?? '未指定', '转发档位': r.reasoningEffort ?? '—',
     '思考模式': r.thinkingType ?? '—', '思考预算 Token': number(r.thinkingBudgetTokens),
     '状态': labels[r.status], 'HTTP 状态': r.httpStatus ?? '—', '耗时': duration(r.durationMs),
-    '输入 Token': number(r.inputTokens), '输出 Token': number(r.outputTokens),
+    '输入总量（含缓存）': number(r.inputTokens), '输出 Token': number(r.outputTokens),
+    '本次总用量': r.inputTokens != null && r.outputTokens != null ? number(r.inputTokens + r.outputTokens) : '—',
+    '本次缓存命中率': percent(r.inputTokens > 0 && r.cachedInputTokens != null ? r.cachedInputTokens / r.inputTokens : null),
     '推理 Token': number(r.reasoningTokens),
     '缓存读取': number(r.cachedInputTokens), '缓存写入': number(r.cacheWriteTokens), '错误类型': r.error || '—',
     '收到上游输出': yesNo(r.hasUpstreamOutput), '收到正式结束': yesNo(r.upstreamFinishReceived),

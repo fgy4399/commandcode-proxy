@@ -9,7 +9,7 @@ import { readFileSync, existsSync, appendFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createMonitorStore, createMonitorHandler, requestPath, maskApiKey } from './monitor.mjs';
-import { createCompletionState } from './completion-state.mjs';
+import { createCompletionState, toAnthropicInputUsage } from './completion-state.mjs';
 
 // ── 配置加载 ──────────────────────────────────────
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1381,10 +1381,8 @@ function buildAnthropicResponse(model, fullText, toolCalls, finishReason, usage,
       const estOut = Math.max(1,
         Math.ceil(((fullText || '').length + (thinkingText || '').length) / 4) + (toolCalls ? toolCalls.length * 20 : 0));
       return {
-        input_tokens: usage?.inputTokens ?? 0,
+        ...toAnthropicInputUsage(usage),
         output_tokens: usage?.outputTokens || estOut,
-        cache_creation_input_tokens: usage?.inputTokenDetails?.cacheWriteTokens ?? 0,
-        cache_read_input_tokens: usage?.cachedInputTokens ?? 0,
       };
     })(),
   };
@@ -1536,7 +1534,7 @@ async function* createAnthropicSseTranslator(response, model, messageId, ctx) {
   let currentBlockIndex = -1;
   let currentBlockType = null;
   let blockStarted = false;
-  let inputTokens = 0;
+  let inputTokens = null; // Missing inclusive total must not erase reported cache buckets.
   let outputTokens = 0;
   let cachedInputTokens = 0;
   let cacheWriteTokens = 0;
@@ -1677,8 +1675,8 @@ async function* createAnthropicSseTranslator(response, model, messageId, ctx) {
               normalizeUsage(u);
               inputTokens = u.inputTokens ?? inputTokens;
               outputTokens = u.outputTokens ?? outputTokens;
-              cachedInputTokens = u.cachedInputTokens ?? cachedInputTokens;
-              cacheWriteTokens = u.inputTokenDetails?.cacheWriteTokens ?? cacheWriteTokens;
+              cachedInputTokens = u.cachedInputTokens ?? u.inputTokenDetails?.cacheReadTokens ?? cachedInputTokens;
+              cacheWriteTokens = u.cacheWriteTokens ?? u.inputTokenDetails?.cacheWriteTokens ?? cacheWriteTokens;
               ctx.inputTokens = inputTokens;
               ctx.outputTokens = outputTokens;
               ctx.cachedInputTokens = cachedInputTokens;
@@ -1726,7 +1724,7 @@ async function* createAnthropicSseTranslator(response, model, messageId, ctx) {
         yield `event: message_delta\ndata: ${JSON.stringify({
           type: 'message_delta',
           delta: { stop_reason: stopReason || 'end_turn' },
-          usage: { output_tokens: outputTokens, cache_read_input_tokens: cachedInputTokens, cache_creation_input_tokens: cacheWriteTokens || 0, input_tokens: inputTokens },
+          usage: { output_tokens: outputTokens, ...toAnthropicInputUsage({inputTokens, cachedInputTokens, cacheWriteTokens}) },
         })}\n\n`;
 
         yield `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`;

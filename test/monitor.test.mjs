@@ -56,6 +56,15 @@ async function fixture(t, extraEnv = {}) {
     if (model === 'timeout') return;
     if (model === 'unreported') { event({ type: 'finish', finishReason: 'stop' }); res.end(); return; }
     if (model === 'zero') { event({ type: 'finish', totalUsage: { ...usage, outputTokens: 0 } }); res.end(); return; }
+    if (['usage-screenshot', 'usage-all-cached', 'usage-no-cache', 'usage-flat-write', 'usage-cache-only'].includes(model)) {
+      const totalUsage = model === 'usage-screenshot' ? {inputTokens: 6786, outputTokens: 450, cachedInputTokens: 6528}
+        : model === 'usage-all-cached' ? {inputTokens: 120, outputTokens: 24, cachedInputTokens: 120}
+        : model === 'usage-flat-write' ? {inputTokens: 120, outputTokens: 24, cachedInputTokens: 80, cacheWriteTokens: 12}
+        : model === 'usage-cache-only' ? {outputTokens: 24, cachedInputTokens: 80, cacheWriteTokens: 12}
+        : {inputTokens: 120, outputTokens: 24, cachedInputTokens: 0};
+      res.end(JSON.stringify({type: 'finish', finishReason: 'stop', totalUsage}));
+      return;
+    }
     event({ type: 'finish-step', usage: { inputTokens: 30, outputTokens: 6, cachedInputTokens: 20 } });
     // Final total replaces the step, and has no trailing newline.
     const finalUsage = model === 'cache-details'
@@ -482,4 +491,52 @@ test('admission-rejected model requests retain IP and count as model failures', 
     assert.equal(data.summary.error, 1);
     assert.equal(data.summary.failureRate, 1);
   } finally { controller.abort(); await active; }
+});
+
+test('Anthropic usage partitions cached input instead of double-counting it', {timeout: 10000}, async t => {
+  const f = await fixture(t);
+  for (const stream of [true, false]) {
+    for (const [model, input, read, write, output] of [
+      ['usage-screenshot', 258, 6528, 0, 450],
+      ['reported', 28, 80, 12, 24],
+      ['cache-details', 28, 80, 12, 24],
+      ['usage-flat-write', 28, 80, 12, 24],
+      ['usage-all-cached', 0, 120, 0, 24],
+      ['usage-no-cache', 120, 0, 0, 24],
+    ]) {
+      await t.test(`${model} stream=${stream}: disjoint input buckets`, async () => {
+        const {response, body} = await f.request('/v1/messages', model, stream);
+        assert.equal(response.status, 200, body);
+        const payload = stream
+          ? body.split('\n').filter(line => line.startsWith('data: {')).map(line => JSON.parse(line.slice(6))).find(event => event.type === 'message_delta')
+          : JSON.parse(body);
+        assert.deepEqual(payload.usage, {input_tokens: input, output_tokens: output, cache_read_input_tokens: read, cache_creation_input_tokens: write});
+        const record = (await f.snapshot()).requests[0];
+        const reconstructedInput = payload.usage.input_tokens + payload.usage.cache_read_input_tokens + payload.usage.cache_creation_input_tokens;
+        assert.equal(reconstructedInput, record.inputTokens);
+        assert.equal(record.cachedInputTokens, read);
+        assert.equal(record.outputTokens, output);
+        if (model === 'usage-screenshot') {
+          assert.equal(reconstructedInput + output, 7236);
+          assert.equal(Math.round(read / reconstructedInput * 1000) / 10, 96.2);
+        }
+      });
+    }
+  }
+});
+
+test('Anthropic partial usage preserves cache when inclusive input is unknown', {timeout: 10000}, async t => {
+  const f = await fixture(t);
+  for (const stream of [true, false]) {
+    const {response, body} = await f.request('/v1/messages', 'usage-cache-only', stream);
+    assert.equal(response.status, 200);
+    const payload = stream
+      ? body.split('\n').filter(line => line.startsWith('data: {')).map(line => JSON.parse(line.slice(6))).find(event => event.type === 'message_delta')
+      : JSON.parse(body);
+    assert.deepEqual(payload.usage, {input_tokens: 0, output_tokens: 24, cache_read_input_tokens: 80, cache_creation_input_tokens: 12});
+    const record = (await f.snapshot()).requests[0];
+    assert.equal(record.inputTokens, null);
+    assert.equal(record.cachedInputTokens, 80);
+    assert.equal(record.cacheWriteTokens, 12);
+  }
 });

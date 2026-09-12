@@ -34,6 +34,7 @@ curl http://127.0.0.1:3050/v1/chat/completions \
 - 模型统计仅包含 **POST `/v1/chat/completions` 和 `/v1/messages`**。`/.git/config`、`/backup.sql` 等探测路径以及模型列表等其他请求保留日志，但排除出模型数量、用量、趋势、平均耗时和成功/失败率。失败率 =（模型失败 + 模型断开）÷ 已结束模型请求数；无已结束模型请求时显示 `—`。模型接口的参数错误、鉴权错误、限流、上游失败仍计入，不能仅凭 404 状态判断扫描。旧日志按方法和路径自动重新分类。
 - 每条日志保存来源 IP `clientIp`、实际连接 IP `peerIp` 和来源依据 `ipSource`，支持 IPv4/IPv6 和来源 IP 精确筛选；关键词搜索也可匹配 IP。旧日志未采集的 IP 显示 `—`，无法补回。来源 IP 是服务器可观察到的地址，经过 NAT、VPN 或反向代理时不保证是用户设备的公网 IP。
 - 展示输入/输出 Token、缓存读取/写入、命中请求数、输入缓存命中率和当前时间段用量趋势。缓存命中率 = 缓存读取 Token ÷ **同时报告输入和缓存读取字段的请求**的输入 Token；缓存写入不计作命中，缓存读取不重复加入总 Token。
+- 监控的输入总量已包含缓存读取/写入；顶部是筛选范围内多次模型请求累计，不是当前上下文占用。Anthropic 响应的 `input_tokens` 则只包含未缓存输入：输入总量减缓存读取、减缓存写入。流式与非流式均按此转换，原始监控数据不做重复扣减。例如总输入 6786、缓存读取 6528、输出 450、无缓存写入时，返回普通输入 258，总用量为 7236，单次缓存率 96.2%。旧版会将缓存重复加到客户端总量；升级只修正新响应，客户端已保存的历史用量不会自动修改。缓存写入非零时，部分客户端的缓存率还会因分母未含缓存写入而与监控不同。
 - OpenAI 和 Anthropic 的流式/非流式请求都从上游原始 usage 采集。`—` 表示字段未报告，`0` 表示明确报告为零；不使用本地输出估算值。失败或中断的请求可能只有部分用量。
 - 每条日志显示实际转发的推理档位和推理 Token；详情可对照客户端档位、`thinking.type` 和思考预算。推理 Token 读取上游 `usage.reasoningTokens` 或 `usage.outputTokenDetails.reasoningTokens`（含 `totalUsage`）；未报告显示 `—`，明确为零显示 `0`，不从推理文本估算。推理 Token 属于输出明细，不重复加入总量。转发档位 `—` 表示未转发该字段或尚未发起上游请求，不表示模型没有推理。
 - 显式档位原样透传，不强制限制为 `low`/`medium`/`high`。OpenAI 使用 `reasoning_effort`；Anthropic 按 `reasoning_effort` > `output_config.effort` > `thinking.effort` 取值并转成上游 `params.reasoning_effort`。`adaptive` 未指定档位时不再默认填 `medium`；只有未指定显式档位的 `thinking.type=enabled` 预算请求保留兼容映射：≥10000→high、≥5000→medium、其余→low。上游是否支持该档位、是否返回推理明细由上游决定。
@@ -257,7 +258,7 @@ Anthropic Messages API 兼容端点。支持流式和非流式、工具调用。
 | `tool_choice` | `{type:"auto"/"any"/"tool"}` | `any`→`required`，`tool`→function 对象 |
 | 推理强度 | `reasoning_effort` / `output_config.effort` / `thinking.effort` | 按此前后优先级原值转发；仅 enabled 预算请求无显式档位时映射 `thinking.budget_tokens`（≥10000→high, ≥5000→medium, 其余→low） |
 | 停止原因 | `end_turn`/`max_tokens`/`tool_use` | 自动映射为 `stop`/`length`/`tool_calls` |
-| Token 用量 | `input_tokens`/`output_tokens` + 缓存 | 透传，缓存字段映射为 Anthropic 格式 |
+| Token 用量 | `input_tokens`/`output_tokens` + 缓存 | 普通输入 = 上游输入总量 − 缓存读取 − 缓存写入，三个输入部分互不重叠；输出原样回报 |
 
 **流式响应（SSE，Anthropic 格式）：**
 ```
