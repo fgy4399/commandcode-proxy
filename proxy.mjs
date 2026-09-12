@@ -57,6 +57,7 @@ export const monitorStore = createMonitorStore({
   retentionLimit: Number.isInteger(configuredMonitorLimit) && configuredMonitorLimit >= 1 && configuredMonitorLimit <= 100000
     ? configuredMonitorLimit : 100000,
   retentionDays: 30,
+  trustedProxies: process.env.CC_TRUSTED_PROXIES ?? '',
   persistence: process.env.CC_MONITOR_DIR === 'off' ? false : resolve(__dirname, process.env.CC_MONITOR_DIR || './data/monitor'),
 });
 const handleMonitor = createMonitorHandler(monitorStore);

@@ -28,9 +28,11 @@ curl http://127.0.0.1:3050/v1/chat/completions \
 
 ## 请求监控
 
-启动后访问 **http://127.0.0.1:3050/monitor**（使用自定义端口时替换 `3050`）。页面每 2 秒刷新，支持 Key、模型、状态组合筛选，以及最近 **1 天、7 天、30 天、自定义时间段**（本地时区，精确到秒，包含起止时刻）。支持搜索、分页、实时详情、暂停和导出筛选结果；统计与趋势覆盖筛选后的全部记录，不限当前页。
+启动后访问 **http://127.0.0.1:3050/monitor**（使用自定义端口时替换 `3050`）。顶部全局筛选支持 Key、模型、请求类型、状态、来源 IP，以及最近 **1 天、7 天、30 天、自定义时间段**（本地时区，精确到秒，包含起止时刻）。页面每 2 秒刷新；支持搜索、分页、实时详情、暂停和导出。模型统计覆盖当前筛选后的全部模型请求，不限当前页，列表和导出则包含全部匹配日志。
 
 - 记录 API 请求的开始时间、模型、协议路径、流式模式、状态、HTTP 状态和耗时，包括请求校验失败、上游错误及客户端断连。`/health`、`OPTIONS` 和监控自身请求不进入日志。
+- 模型统计仅包含 **POST `/v1/chat/completions` 和 `/v1/messages`**。`/.git/config`、`/backup.sql` 等探测路径以及模型列表等其他请求保留日志，但排除出模型数量、用量、趋势、平均耗时和成功/失败率。失败率 =（模型失败 + 模型断开）÷ 已结束模型请求数；无已结束模型请求时显示 `—`。模型接口的参数错误、鉴权错误、限流、上游失败仍计入，不能仅凭 404 状态判断扫描。旧日志按方法和路径自动重新分类。
+- 每条日志保存来源 IP `clientIp`、实际连接 IP `peerIp` 和来源依据 `ipSource`，支持 IPv4/IPv6 和来源 IP 精确筛选；关键词搜索也可匹配 IP。旧日志未采集的 IP 显示 `—`，无法补回。来源 IP 是服务器可观察到的地址，经过 NAT、VPN 或反向代理时不保证是用户设备的公网 IP。
 - 展示输入/输出 Token、缓存读取/写入、命中请求数、输入缓存命中率和当前时间段用量趋势。缓存命中率 = 缓存读取 Token ÷ **同时报告输入和缓存读取字段的请求**的输入 Token；缓存写入不计作命中，缓存读取不重复加入总 Token。
 - OpenAI 和 Anthropic 的流式/非流式请求都从上游原始 usage 采集。`—` 表示字段未报告，`0` 表示明确报告为零；不使用本地输出估算值。失败或中断的请求可能只有部分用量。
 - 每条日志显示实际转发的推理档位和推理 Token；详情可对照客户端档位、`thinking.type` 和思考预算。推理 Token 读取上游 `usage.reasoningTokens` 或 `usage.outputTokenDetails.reasoningTokens`（含 `totalUsage`）；未报告显示 `—`，明确为零显示 `0`，不从推理文本估算。推理 Token 属于输出明细，不重复加入总量。转发档位 `—` 表示未转发该字段或尚未发起上游请求，不表示模型没有推理。
@@ -40,7 +42,7 @@ curl http://127.0.0.1:3050/v1/chat/completions \
 
 可用 `CC_MONITOR_DIR` 指定历史目录，`CC_MONITOR_DIR=off` 关闭持久化；`CC_MONITOR_MAX_RECORDS` 可设置 1–100000 的记录上限。Compose 默认使用 `monitor-data` 数据卷保存历史，重建容器后保留。页面会显示最早保留请求及存储异常提示。
 
-监控接口 `/monitor/api/query` 支持 `keyId`、`model`、`status`、`q`、`from`、`to`、`page`、`pageSize`；时间为带时区的 ISO 格式。`/monitor/api/export` 使用相同筛选条件导出全部匹配记录；`/monitor/api/request?id=...` 获取单条详情。导出使用页面上次成功查询的时间边界，暂停后不会悄悄移动时间范围。
+监控接口 `/monitor/api/query` 支持 `keyId`、`model`、`requestKind`（`model`/`other`）、`ip`（来源 IP 精确匹配）、`status`、`q`、`from`、`to`、`page`、`pageSize`；时间为带时区的 ISO 格式。响应顶层 `total` 是匹配日志数，`summary.total` 是模型请求数，`summary.trafficTotal`/`excludedTotal` 标明日志数/排除数量。`/monitor/api/export` 使用相同筛选条件导出全部匹配记录；`/monitor/api/request?id=...` 获取详情。导出使用上次成功查询的时间边界，暂停后不会移动范围。
 
 默认仅允许通过本机回环地址访问监控。远程、Docker 端口映射或反向代理部署时，设置独立的监控令牌，然后在页面输入该令牌：
 
@@ -51,6 +53,25 @@ CC_MONITOR_TOKEN='替换为随机监控令牌' docker compose up --build -d
 ```
 
 设置令牌后，所有 `/monitor/api/*` 数据接口均需 `Authorization: Bearer <监控令牌>`，包括本机访问。浏览器只在当前页面内存中保存令牌。反向代理部署务必配置此变量，避免本机反代连接被视作本地访问。
+
+### 反向代理后的客户端 IP
+
+默认只使用 TCP 连接地址，不信任客户端传入的 `X-Forwarded-For` 或 `X-Real-IP`。若通过 Nginx 等反向代理访问，配置 `CC_TRUSTED_PROXIES` 为该反向代理的明确 IP 或 CIDR（多个用逗号分隔），仅在直连来源可信时解析转发头。沿 `X-Forwarded-For` 从右向左，取第一个不可信节点；无 XFF 时才回退 `X-Real-IP`。无效/重复头直接使用连接地址，防止伪造。
+
+例如 Nginx 确实从 `172.20.0.2` 连接本服务，可设置：
+
+```bash
+CC_TRUSTED_PROXIES='172.20.0.2' CC_MONITOR_TOKEN='你的监控令牌' docker compose up -d
+```
+
+这是示例地址，须替换为实际代理地址；可先从日志详情的“直连 IP”核对。Nginx 直接面向公网时，建议覆盖来源头为它观察到的地址：
+
+```nginx
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Real-IP $remote_addr;
+```
+
+多层代理应逐层维护来源链，只配置你控制的可信跳点。不要把所有来源设为可信；若 Docker 网络转换已经隐藏公网来源且没有可信代理转发它，本服务无法自行推断。该设置只影响日志，不改变监控页的访问权限，反代部署仍需 `CC_MONITOR_TOKEN`。
 
 运行监控回归测试：`npm test`（使用本地模拟上游，无需真实 API Key）。
 

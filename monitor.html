@@ -16,27 +16,33 @@
 <div class="mobile-brand">⌘ COMMAND CODE / PROXY CONSOLE</div><div class="breadcrumb">工作空间<span>/</span>请求监控</div>
 <div class="heading"><div><h1>请求监控</h1><p class="subtitle">跟踪每一次调用，让 Token 用量与缓存效率一目了然。</p></div><div class="actions"><span id="connection" class="live offline" role="status"><span class="dot"></span>正在连接</span><button id="pause" class="icon-btn">暂停刷新</button><button id="export" class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5"/></svg>导出日志</button></div></div>
 <div id="banner" class="banner" hidden><span id="message"></span><form id="auth" class="auth" hidden><input id="token" type="password" placeholder="输入监控访问令牌" aria-label="监控访问令牌" autocomplete="off"><button type="submit">连接</button></form></div>
-<section class="stats" aria-label="请求统计">
-<div class="card stat"><div class="stat-title">请求总数<span class="stat-icon">↗</span></div><div id="total" class="stat-value">0</div><div class="stat-note"><span>成功 <b id="success">0</b></span><span>失败 <b id="errors">0</b></span><span>进行中 <b id="pending">0</b></span></div></div>
-<div class="card stat"><div class="stat-title">Token 总用量<span class="stat-icon">T</span></div><div id="tokens" class="stat-value">—</div><div class="stat-note"><span>输入 <b id="input">—</b></span><span>输出 <b id="output">—</b></span><span title="上游报告的输出 Token 明细，不重复加入总用量">其中推理 <b id="reasoning">—</b></span></div></div>
-<div class="card stat"><div class="stat-title">缓存命中率<span class="stat-icon">◈</span></div><div id="cache-rate" class="stat-value accent">—</div><div class="stat-note"><span>缓存读取 <b id="cached">—</b> Token</span></div></div>
-<div class="card stat"><div class="stat-title">平均响应耗时<span class="stat-icon">◷</span></div><div id="latency" class="stat-value">—</div><div class="stat-note"><span>成功率 <b id="success-rate">—</b></span><span>已结束请求</span></div></div>
-</section>
-<div class="panels"><section class="card"><div class="panel-head"><h2>Token 用量趋势 <span id="trend-range" class="subtle">· 当前时间段</span></h2><div class="legend"><span><i></i>输入</span><span><i class="blue"></i>输出</span></div></div><div class="chart-wrap"><svg id="chart" class="chart" viewBox="0 0 620 138" preserveAspectRatio="none" role="img" aria-label="当前筛选时间段的输入及输出Token用量"></svg><div class="chart-note">按请求开始时间聚合 · 当前筛选的全部记录</div></div></section>
-<section class="card cache-panel"><div class="panel-head"><h2>缓存利用情况</h2><span class="subtle">上游报告</span></div><div class="cache-content"><div id="ring" class="ring"><div class="ring-inner"><span id="ring-rate" class="ring-value">—</span><span class="ring-label">输入命中率</span></div></div><div class="cache-breakdown"><div class="breakdown-row"><span>缓存读取</span><b id="cache-read">—</b></div><div class="breakdown-row"><span>缓存写入</span><b id="cache-write">—</b></div><div class="breakdown-row"><span>命中请求</span><b id="cache-hits">0</b></div></div></div><div class="cache-foot">缓存读取 Token ÷ 同批请求的输入 Token；写入不计作命中</div></section></div>
-<section class="card"><div class="logs-head"><h2>请求日志 <span id="log-count" class="count">0 条</span></h2><span id="updated" class="subtle" aria-live="off">等待首次同步</span></div>
+<section class="card" style="margin-bottom:20px" aria-label="全局筛选">
+<div class="panel-head" style="padding-bottom:12px"><h2>全局筛选</h2><span class="subtle">应用于模型统计、趋势、日志和导出</span></div>
 <div class="filters">
-<input id="search" type="search" placeholder="搜索模型、Key 标识、档位或请求 ID…" aria-label="搜索请求">
+<input id="search" type="search" maxlength="512" placeholder="搜索模型、Key、IP、档位或请求 ID…" aria-label="搜索请求">
 <select id="key" aria-label="按 Key 筛选"><option value="">全部 Key</option><option value="none">未提供 Key</option></select>
 <select id="model" aria-label="按模型筛选"><option value="">全部模型</option></select>
+<select id="request-kind" aria-label="按请求类型筛选"><option value="">全部请求类型</option><option value="model">模型请求</option><option value="other">其他请求（含扫描）</option></select>
 <select id="status" aria-label="按状态筛选"><option value="">全部状态</option><option value="success">成功</option><option value="error">失败</option><option value="pending">进行中</option><option value="aborted">已断开</option></select>
+<input id="ip" type="text" maxlength="45" placeholder="来源 IP 精确筛选" aria-label="按来源 IP 筛选" style="width:190px" spellcheck="false">
 <select id="range" aria-label="按时间筛选"><option value="1440" selected>最近 1 天</option><option value="10080">最近 7 天</option><option value="43200">最近 30 天</option><option value="custom">自定义时间段</option><option value="0">全部保留记录</option><option value="15">最近 15 分钟</option><option value="60">最近 1 小时</option></select>
 <button id="reset-filters" type="button">重置筛选</button>
 <div id="custom-range" class="custom-range" hidden><label>开始时间 <input id="from" type="datetime-local" step="1" aria-label="开始时间"></label><label>结束时间 <input id="to" type="datetime-local" step="1" aria-label="结束时间"></label><span>使用本地时区，包含起止时间</span></div>
 <div id="filter-error" class="filter-error" role="alert" hidden></div>
 </div>
+</section>
+<p id="stats-scope" class="subtitle" style="margin-bottom:12px" role="status">模型统计仅包含两个生成接口的 POST 请求；其他路径保留在日志中。</p>
+<section class="stats" aria-label="请求统计">
+<div class="card stat"><div class="stat-title">模型请求数<span class="stat-icon">↗</span></div><div id="total" class="stat-value">0</div><div class="stat-note"><span>成功 <b id="success">0</b></span><span>失败 <b id="errors">0</b></span><span>进行中 <b id="pending">0</b></span></div></div>
+<div class="card stat"><div class="stat-title">Token 总用量<span class="stat-icon">T</span></div><div id="tokens" class="stat-value">—</div><div class="stat-note"><span>输入 <b id="input">—</b></span><span>输出 <b id="output">—</b></span><span title="上游报告的输出 Token 明细，不重复加入总用量">其中推理 <b id="reasoning">—</b></span></div></div>
+<div class="card stat"><div class="stat-title">缓存命中率<span class="stat-icon">◈</span></div><div id="cache-rate" class="stat-value accent">—</div><div class="stat-note"><span>缓存读取 <b id="cached">—</b> Token</span></div></div>
+<div class="card stat"><div class="stat-title">模型平均耗时<span class="stat-icon">◷</span></div><div id="latency" class="stat-value">—</div><div class="stat-note"><span>成功率 <b id="success-rate">—</b></span><span title="失败及断开数 ÷ 已结束模型请求数；不含其他路径">失败率 <b id="failure-rate">—</b></span></div></div>
+</section>
+<div class="panels"><section class="card"><div class="panel-head"><h2>Token 用量趋势 <span id="trend-range" class="subtle">· 当前时间段</span></h2><div class="legend"><span><i></i>输入</span><span><i class="blue"></i>输出</span></div></div><div class="chart-wrap"><svg id="chart" class="chart" viewBox="0 0 620 138" preserveAspectRatio="none" role="img" aria-label="当前筛选时间段的模型输入及输出Token用量"></svg><div class="chart-note">按请求开始时间聚合 · 仅统计模型请求</div></div></section>
+<section class="card cache-panel"><div class="panel-head"><h2>缓存利用情况</h2><span class="subtle">上游报告</span></div><div class="cache-content"><div id="ring" class="ring"><div class="ring-inner"><span id="ring-rate" class="ring-value">—</span><span class="ring-label">输入命中率</span></div></div><div class="cache-breakdown"><div class="breakdown-row"><span>缓存读取</span><b id="cache-read">—</b></div><div class="breakdown-row"><span>缓存写入</span><b id="cache-write">—</b></div><div class="breakdown-row"><span>命中请求</span><b id="cache-hits">0</b></div></div></div><div class="cache-foot">缓存读取 Token ÷ 同批请求的输入 Token；写入不计作命中</div></section></div>
+<section class="card"><div class="logs-head"><h2>请求日志 <span id="log-count" class="count">0 条</span></h2><span id="updated" class="subtle" aria-live="off">等待首次同步</span></div>
 <div id="history-note" class="history-note">正在读取历史记录…</div>
-<div class="table-scroll"><table><thead><tr><th>请求时间 / ID</th><th>Key</th><th>模型 / 接口</th><th>状态</th><th>模式</th><th title="实际发往上游的推理档位；原始请求档位见详情">转发档位</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num" title="输出 Token 的推理明细，上游未报告时显示 —">推理 Token</th><th class="num">缓存读取</th><th class="num">耗时</th><th aria-label="操作"></th></tr></thead><tbody id="rows"></tbody></table></div><div class="table-foot"><span id="coverage">— 表示上游未报告用量</span><div class="pagination"><span id="page-info">第 1 / 1 页</span><button id="prev" aria-label="上一页">←</button><button id="next" aria-label="下一页">→</button></div></div></section>
+<div class="table-scroll"><table><thead><tr><th>请求时间 / ID</th><th>Key</th><th title="直连来源，或可信代理传来的客户端地址；不保证总是公网地址">来源 IP</th><th>模型 / 接口</th><th>状态</th><th>模式</th><th title="实际发往上游的推理档位；原始请求档位见详情">转发档位</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num" title="输出 Token 的推理明细，上游未报告时显示 —">推理 Token</th><th class="num">缓存读取</th><th class="num">耗时</th><th aria-label="操作"></th></tr></thead><tbody id="rows"></tbody></table></div><div class="table-foot"><span id="coverage">— 表示上游未报告用量</span><div class="pagination"><span id="page-info">第 1 / 1 页</span><button id="prev" aria-label="上一页">←</button><button id="next" aria-label="下一页">→</button></div></div></section>
 <footer class="footer"><span id="retention">最近 30 天历史 · Key 仅保留脱敏标识 · 不记录对话内容</span><span>每 2 秒刷新 · 所有统计随筛选条件变化</span></footer>
 </main></div>
 <dialog id="detail"><header><h2>请求详情</h2><button id="close-detail" aria-label="关闭详情">✕</button></header><p id="detail-status" class="subtle" role="status"></p><dl id="detail-content"></dl><p class="dialog-note">Key 去掉 user_ 后仅显示前 4 位与后 4 位，中间隐藏。Token 仅采集上游报告值，— 表示未报告；失败或中断的请求可能只有部分用量。缓存读取包含在输入 Token 中，推理 Token 属于输出明细，均不重复加入总量。转发档位 — 表示未转发该字段或请求尚未发往上游。</p></dialog>
@@ -55,6 +61,8 @@ const terminationNotes = {
   stream_timeout: '等待上游新数据超过空闲时限；不是整个请求的总时长限制。',
 };
 const yesNo = value => value == null ? '—（旧记录未采集）' : value ? '是' : '否';
+const kindLabel = r => r.requestKind === 'model' ? '模型请求' : '其他请求';
+const ipSourceLabel = value => ({socket: '直连地址', 'x-forwarded-for': '可信代理 · X-Forwarded-For', 'x-real-ip': '可信代理 · X-Real-IP'}[value] || '未采集');
 const state = {data: null, queryParams: null, page: 1, paused: false, token: '', timer: null, debounce: null, controller: null, detailController: null, selectedId: null, exporting: false};
 const pageSize = 15;
 function localInputValue(time) {
@@ -63,7 +71,7 @@ function localInputValue(time) {
 }
 function filterParams(now = Date.now()) {
   const params = new URLSearchParams();
-  for (const [id, name] of [['search', 'q'], ['key', 'keyId'], ['model', 'model'], ['status', 'status']]) {
+  for (const [id, name] of [['search', 'q'], ['key', 'keyId'], ['model', 'model'], ['status', 'status'], ['request-kind', 'requestKind'], ['ip', 'ip']]) {
     const value = $(id).value.trim();
     if (value) params.set(name, value);
   }
@@ -136,8 +144,9 @@ function render() {
     'cache-rate': percent(cacheRate), 'ring-rate': percent(cacheRate),
     'cache-read': number(summary.cachedInputTokens), 'cache-write': number(summary.cacheWriteTokens),
     'cache-hits': number(summary.cacheHits), latency: duration(summary.avgDurationMs),
-    'success-rate': percent(summary.successRate), 'log-count': number(summary.total) + ' 条',
-    coverage: state.data ? `${summary.usageReported} / ${summary.total} 条已报告用量 · ${summary.reasoningReported} 条已报告推理 Token · 已断开 ${summary.aborted} 条` : '等待查询结果 · — 表示未报告',
+    'success-rate': percent(summary.successRate), 'failure-rate': percent(summary.failureRate), 'log-count': number(state.data?.total) + ' 条',
+    'stats-scope': state.data ? `当前筛选：${number(summary.trafficTotal)} 条日志，其中 ${number(summary.total)} 条模型请求；${number(summary.excludedTotal)} 条其他请求已排除出统计。失败率包含模型请求失败及断开，不含进行中请求。` : '模型统计仅包含两个生成接口的 POST 请求；其他路径保留在日志中。',
+    coverage: state.data ? `模型用量：${summary.usageReported} / ${summary.total} 条已报告 · ${summary.reasoningReported} 条已报告推理 Token · 模型请求已断开 ${summary.aborted} 条` : '等待查询结果 · — 表示未报告',
   };
   Object.entries(values).forEach(([id, value]) => { $(id).textContent = value; });
   $('ring').style.background = `conic-gradient(var(--green) ${Math.min(1, Math.max(0, cacheRate || 0)) * 360}deg,#edf1f5 0deg)`;
@@ -164,10 +173,13 @@ function renderRows(rows) {
     time.title = new Date(r.startedAt).toLocaleString('zh-CN');
     const key = cell(tr, r.keyLabel || '未提供 Key', 'key-cell');
     key.title = r.keyId ? 'Key 标识：' + r.keyId.slice(0, 12) : '请求未提供可识别的 API Key';
+    const ip = cell(tr, r.clientIp || '—', 'key-cell');
+    ip.title = r.clientIp ? ipSourceLabel(r.ipSource) + '；直连 IP：' + (r.peerIp || '—') : '旧记录未采集或来源不可用';
     const model = cell(tr, r.model || '—', 'model');
     model.title = r.model || '';
     const path = document.createElement('span');
     path.className = 'path'; path.textContent = r.method + ' ' + r.path; model.append(path);
+    const kind = document.createElement('span'); kind.className = 'path'; kind.textContent = kindLabel(r); model.append(kind);
     const status = cell(tr, ''), badge = document.createElement('span');
     badge.className = 'badge ' + r.status; badge.textContent = labels[r.status] || r.status; status.append(badge);
     cell(tr, r.stream == null ? '—' : r.stream ? '流式' : '非流式');
@@ -186,7 +198,7 @@ function renderRows(rows) {
   if (focusedId) (focusTarget || $('search')).focus({preventScroll: true});
   if (!rows.length) {
     const tr = document.createElement('tr'); tr.className = 'empty';
-    const td = cell(tr, ''); td.colSpan = 12;
+    const td = cell(tr, ''); td.colSpan = 13;
     const title = document.createElement('strong');
     title.textContent = state.data ? '没有符合筛选条件的请求' : '等待查询结果';
     td.append(title, document.createTextNode(state.data ? '调整 Key、模型或时间范围，或通过代理发起新的请求。' : '连接服务后，日志与统计将自动显示。'));
@@ -202,6 +214,8 @@ function renderDetail(r) {
     '结束时间': r.endedAt ? new Date(r.endedAt).toLocaleString('zh-CN') : '—',
     '接口': r.method + ' ' + r.path, '模型': r.model || '—', '模式': r.stream == null ? '—' : r.stream ? '流式' : '非流式',
     'Key': r.keyLabel || '未提供 Key', 'Key 标识': r.keyId ? r.keyId.slice(0, 12) : '—',
+    '请求类型': kindLabel(r), '来源 IP': r.clientIp || '—（未采集）',
+    '直连 IP': r.peerIp || '—（未采集）', 'IP 来源': ipSourceLabel(r.ipSource),
     '客户端档位': r.requestedReasoningEffort ?? '未指定', '转发档位': r.reasoningEffort ?? '—',
     '思考模式': r.thinkingType ?? '—', '思考预算 Token': number(r.thinkingBudgetTokens),
     '状态': labels[r.status], 'HTTP 状态': r.httpStatus ?? '—', '耗时': duration(r.durationMs),
@@ -246,7 +260,7 @@ function updateOptions(id, entries, initial) {
 }
 function renderHistory(data) {
   const first = data.oldestAvailableAt ? new Date(data.oldestAvailableAt).toLocaleString('zh-CN') : null;
-  const notes = [first ? '最早保留请求：' + first : '尚无历史请求', '统计包含筛选后的全部记录，不限当前页'];
+  const notes = [first ? '最早保留请求：' + first : '尚无历史请求', '列表包含筛选后的所有请求；顶部统计只计算模型请求'];
   if (data.historyTruncated) notes.push('历史记录已达到保留边界，更早记录不可查询');
   if (data.persistenceError) notes.push('本地日志保存或读取异常，历史可能不完整');
   $('history-note').textContent = notes.join(' · ');
@@ -315,8 +329,8 @@ function filtersChanged(delay = 0) {
   if (!filterParams()) { connection('时间范围无效', false); return; }
   state.debounce = setTimeout(() => refresh(true), delay);
 }
-for (const id of ['key', 'model', 'status', 'from', 'to']) $(id).addEventListener('change', () => filtersChanged());
-$('search').addEventListener('input', () => filtersChanged(300));
+for (const id of ['key', 'model', 'status', 'request-kind', 'from', 'to']) $(id).addEventListener('change', () => filtersChanged());
+for (const id of ['search', 'ip']) $(id).addEventListener('input', () => filtersChanged(300));
 $('range').addEventListener('change', () => {
   $('custom-range').hidden = $('range').value !== 'custom';
   if (!$('custom-range').hidden && !$('from').value && !$('to').value) {
@@ -325,7 +339,7 @@ $('range').addEventListener('change', () => {
   filtersChanged();
 });
 $('reset-filters').onclick = () => {
-  for (const id of ['key', 'model', 'status', 'search', 'from', 'to']) $(id).value = '';
+  for (const id of ['key', 'model', 'status', 'request-kind', 'ip', 'search', 'from', 'to']) $(id).value = '';
   $('range').value = '1440'; $('custom-range').hidden = true; filtersChanged();
 };
 function changePage(delta) {

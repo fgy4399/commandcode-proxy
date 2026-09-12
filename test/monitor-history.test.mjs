@@ -31,6 +31,7 @@ function record(id, overrides = {}) {
     cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null,
     upstreamFinishReceived: null, hasUpstreamOutput: null,
     lastUpstreamEvent: null, lastUpstreamEventAt: null, upstreamFinishReason: null,
+    requestKind: 'model', clientIp: null, peerIp: null, ipSource: null,
     ...overrides,
   };
 }
@@ -285,7 +286,7 @@ test('summary spans all pages, distinguishes unknown and zero, and counts only e
   const result = queryMonitorSnapshot({ requests }, params({ pageSize: '1', page: '2' }), NOW);
   assert.equal(result.requests.length, 1);
   assert.deepEqual(result.summary, {
-    total: 5, success: 2, error: 1, aborted: 1, pending: 1,
+    total: 5, trafficTotal: 5, excludedTotal: 0, failureRate: 0.5, success: 2, error: 1, aborted: 1, pending: 1,
     usageReported: 3, reasoningReported: 2, inputTokens: 1100, outputTokens: 30,
     cachedInputTokens: 50, cacheWriteTokens: null, reasoningTokens: 7,
     cacheHits: 2, cacheRate: 0.2, successRate: 0.5, avgDurationMs: 17.5,

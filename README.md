@@ -28,9 +28,11 @@ curl http://127.0.0.1:3050/v1/chat/completions \
 
 ## Request monitoring
 
-After starting the proxy, open **http://127.0.0.1:3050/monitor** (adjust the port if configured). The Chinese dashboard refreshes every 2 seconds and combines Key, model, status, and time filters: **1 day, 7 days, 30 days, or a custom interval** (local timezone, second precision, inclusive endpoints). Search, pagination, live details, pause/resume, and filtered JSON export are supported. Summaries and charts cover all matching records, not just the current page.
+Open **http://127.0.0.1:3050/monitor** (adjust the port if configured). Global filters above the cards combine Key, model, request type, status, source IP and **1/7/30 days or a custom interval** (local timezone, inclusive endpoints). Refreshes every 2 seconds with search, pagination, details, pause and export. Cards and charts summarize all matching model requests; the list and export contain all matching traffic.
 
 - Tracks API requests, including validation failures, upstream errors, and disconnects. Health checks, OPTIONS, and monitor requests are excluded.
+- Only **POST `/v1/chat/completions` and `/v1/messages`** count toward model statistics. Probe paths such as `/.git/config` and `/backup.sql`, model catalog requests and other traffic remain logged but do not affect model counts, usage, charts, latency or rates. Failure rate = (model errors + aborted model requests) / completed model requests; no completed requests displays `—`. Model-route validation/authentication/rate-limit failures still count. Legacy records are classified by method/path rather than status code.
+- Records include canonical IPv4/IPv6 `clientIp`, socket `peerIp`, and `ipSource`. Exact source-IP filters and IP text search are available. Legacy IPs remain unknown. NAT, VPN and reverse proxies may hide a public address; only observable addresses are recorded.
 - Shows input/output tokens, cache reads/writes, cache-hit requests, latency, and a usage chart for the selected interval. Cache hit rate is cached input divided by input tokens **for requests reporting both fields**. Cache writes are not hits; cached tokens are already included in input tokens and are not added again to total usage.
 - Collects raw upstream usage in all OpenAI/Anthropic streaming and non-streaming paths. Missing fields display `—`, explicit zeros display `0`; local output estimates are excluded. Failed or interrupted requests may report partial usage.
 - Each record shows forwarded reasoning effort and reasoning tokens; details include requested effort, thinking type, and budget. Reasoning tokens come from upstream `usage.reasoningTokens` or `usage.outputTokenDetails.reasoningTokens` (also under `totalUsage`), never text estimates. Missing values display `—`; explicit zero displays `0`. Reasoning is an output-token breakdown, not added again to totals. A missing forwarded effort means the field was omitted or forwarding has not started, not that the model did no reasoning.
@@ -40,7 +42,7 @@ After starting the proxy, open **http://127.0.0.1:3050/monitor** (adjust the por
 
 Set `CC_MONITOR_DIR` to change the history directory, or `off` to disable persistence. `CC_MONITOR_MAX_RECORDS` accepts 1–100000. Compose uses the `monitor-data` volume, preserving history when containers are rebuilt. The dashboard shows the oldest retained request and persistence errors.
 
-`/monitor/api/query` accepts `keyId`, `model`, `status`, `q`, `from`, `to`, `page`, and `pageSize`; dates require ISO timestamps with a timezone. `/monitor/api/export` exports all matching records with the same filters; `/monitor/api/request?id=...` retrieves one record. Exports reuse the last successful query's exact date boundaries, including when paused.
+`/monitor/api/query` accepts `keyId`, `model`, `requestKind` (`model`/`other`), `ip` (exact client IP), `status`, `q`, `from`, `to`, `page`, and `pageSize`. Top-level `total` counts matching logs, `summary.total` counts model requests, and `summary.trafficTotal`/`excludedTotal` expose traffic/excluded counts. ISO timestamps require a timezone. `/monitor/api/export` exports all matching logs; `/monitor/api/request?id=...` retrieves details. Exports reuse the last successful query's date boundaries.
 
 Monitor access defaults to loopback connections only. For remote access, Docker port forwarding, or reverse proxy deployments, set a separate monitoring token and enter it in the dashboard:
 
@@ -51,6 +53,25 @@ CC_MONITOR_TOKEN='replace-with-a-random-monitor-token' docker compose up --build
 ```
 
 When configured, all `/monitor/api/*` data endpoints require `Authorization: Bearer <monitor-token>` for every client, including localhost. The browser stores the token only in page memory. Always configure this variable behind a reverse proxy, where a local proxy connection could otherwise be treated as local access.
+
+### Client IP behind a reverse proxy
+
+By default, only the TCP peer address is trusted. Set `CC_TRUSTED_PROXIES` to explicit proxy IPs or CIDRs, separated by commas, to accept forwarding headers from those peers. XFF is traversed right to left to the first untrusted hop. X-Real-IP is used only without XFF. Malformed or duplicate headers fall back to the socket address. No private range or loopback address is trusted automatically.
+
+For example, **only if your proxy actually connects from 172.20.0.2**:
+
+```bash
+CC_TRUSTED_PROXIES='172.20.0.2' CC_MONITOR_TOKEN='your-monitor-token' docker compose up -d
+```
+
+Replace the example with the proxy address shown as “直连 IP” in details. For Nginx directly facing clients, overwrite incoming claims with its observed peer:
+
+```nginx
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Real-IP $remote_addr;
+```
+
+For multiple proxy hops, maintain the chain and trust only controlled hops. Do not trust every address. If NAT hides the original address without a trusted forwarding header, it cannot be recovered here. This setting affects logs only; monitoring authorization still uses the socket and `CC_MONITOR_TOKEN`.
 
 Run monitoring regression tests with `npm test` (local mock upstream; no real API key required).
 

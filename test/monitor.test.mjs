@@ -72,7 +72,7 @@ async function fixture(t, extraEnv = {}) {
   const bootstrap = `const originalFetch = globalThis.fetch; globalThis.fetch = (url, options) => String(url).startsWith('http://127.0.0.1:') ? originalFetch(url, options) : Promise.resolve(new Response('{"version":"0.32.3"}', {status:200})); import(${JSON.stringify(entry)});`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', bootstrap], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', CC_API_BASE: `http://127.0.0.1:${upstreamPort}`, CC_USE_PROVIDER_MODELS: 'false', CC_MONITOR_TOKEN: '', CC_MONITOR_DIR: 'off', CC_MONITOR_MAX_RECORDS: '1000', CC_MAX_INFLIGHT: '0', CC_STREAM_IDLE_MS: '200', CC_NONSTREAM_IDLE_MS: '200', LOG_FILE: '', ...extraEnv },
+    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', CC_API_BASE: `http://127.0.0.1:${upstreamPort}`, CC_USE_PROVIDER_MODELS: 'false', CC_MONITOR_TOKEN: '', CC_MONITOR_DIR: 'off', CC_MONITOR_MAX_RECORDS: '1000', CC_TRUSTED_PROXIES: '', CC_MAX_INFLIGHT: '0', CC_STREAM_IDLE_MS: '200', CC_NONSTREAM_IDLE_MS: '200', LOG_FILE: '', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
@@ -292,7 +292,9 @@ test('HTTP key filtering, paginated summaries and filtered export', { timeout: 2
   const all = await query({pageSize: '1'});
   assert.equal(all.total, 6);
   assert.equal(all.requests.length, 1);
-  assert.equal(all.summary.total, 6);
+  assert.equal(all.summary.total, 4);
+  assert.equal(all.summary.trafficTotal, 6);
+  assert.equal(all.summary.excludedTotal, 2);
   assert.equal(all.facets.keys.length, 2);
   assert.ok(all.facets.keys.every(key => key.label === '4jGG****DZch'));
   const snapshot = await f.snapshot();
@@ -436,4 +438,48 @@ test('OpenAI terminal boundaries and nested usage are stable across protocols', 
       if (model !== 'cache-details') assert.equal(result.usage.completion_tokens_details.reasoning_tokens, 10);
     }
   }
+});
+
+test('HTTP logs capture IP for scans and model failures, with explicit proxy trust', {timeout: 10000}, async t => {
+  for (const trusted of [false, true]) {
+    const f = await fixture(t, {CC_TRUSTED_PROXIES: trusted ? '127.0.0.1' : ''});
+    const headers = {'x-forwarded-for': '198.51.100.99'};
+    await fetch(f.base + '/backup.sql', {headers});
+    await fetch(f.base + '/v1/messages', {method: 'POST', headers, body: '{'});
+    const expectedIp = trusted ? '198.51.100.99' : '127.0.0.1';
+    const response = await fetch(f.base + '/monitor/api/query?' + new URLSearchParams({ip: expectedIp}));
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.total, 2);
+    assert.equal(data.summary.total, 1);
+    assert.equal(data.summary.error, 1);
+    assert.equal(data.summary.excludedTotal, 1);
+    assert.equal(data.summary.failureRate, 1);
+    assert.ok(data.requests.every(r => r.clientIp === expectedIp && r.peerIp === '127.0.0.1'));
+    const scans = await (await fetch(f.base + '/monitor/api/query?requestKind=other')).json();
+    assert.equal(scans.total, 1);
+    assert.equal(scans.summary.failureRate, null);
+    assert.equal(scans.requests[0].path, '/backup.sql');
+    const exported = await (await fetch(f.base + '/monitor/api/export?' + new URLSearchParams({ip: expectedIp, requestKind: 'other'}))).json();
+    assert.equal(exported.requests.length, 1);
+    assert.equal(exported.requests[0].clientIp, expectedIp);
+  }
+});
+
+test('admission-rejected model requests retain IP and count as model failures', {timeout: 10000}, async t => {
+  const f = await fixture(t, {CC_MAX_INFLIGHT: '1', CC_STREAM_IDLE_MS: '5000'});
+  const controller = new AbortController();
+  const active = f.request('/v1/chat/completions', 'hold', true, {signal: controller.signal}).catch(() => {});
+  try {
+    await eventually(async () => assert.equal((await f.snapshot()).requests[0]?.status, 'pending'));
+    const rejected = await f.request('/v1/messages', 'reported', false);
+    assert.equal(rejected.response.status, 503);
+    const data = await (await fetch(f.base + '/monitor/api/query')).json();
+    assert.equal(data.requests[0].clientIp, '127.0.0.1');
+    assert.equal(data.requests[0].requestKind, 'model');
+    assert.equal(data.summary.total, 2);
+    assert.equal(data.summary.pending, 1);
+    assert.equal(data.summary.error, 1);
+    assert.equal(data.summary.failureRate, 1);
+  } finally { controller.abort(); await active; }
 });

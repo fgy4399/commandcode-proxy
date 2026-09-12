@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, chmod, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { getRequestKind, normalizeIp, sanitizeRequestSource } from './request-source.mjs';
+export { getRequestKind } from './request-source.mjs';
 
 export const TOKEN_FIELDS = ['inputTokens', 'outputTokens', 'cachedInputTokens', 'cacheWriteTokens', 'reasoningTokens'];
 const STATUSES = new Set(['pending', 'success', 'error', 'aborted']);
@@ -38,6 +40,7 @@ export function sanitizeFinalRecord(value) {
   const record = {
     id: text(value.id, 128), startedAt, endedAt,
     method: text(value.method, 32), path: text(value.path, 2048)?.split(/[?#]/, 1)[0] ?? null,
+    ...sanitizeRequestSource(value),
     model: text(value.model, 256), stream: typeof value.stream === 'boolean' ? value.stream : null,
     status: value.status, httpStatus: Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? value.httpStatus : null,
     durationMs: number(value.durationMs) ?? 0,
@@ -52,6 +55,7 @@ export function sanitizeFinalRecord(value) {
     upstreamFinishReason: UPSTREAM_FINISH_REASONS.has(value.upstreamFinishReason) ? value.upstreamFinishReason : null,
     error: typeof value.error === 'string' && /^(?:http_[45]\d\d|invalid_request_error|auth_error|authentication_error|rate_limit_error|not_found|upstream_error|temporarily_unavailable|proxy_error|internal_error|server_busy|stream_timeout|stream_error|zero_output|empty_response|upstream_incomplete)$/.test(value.error) ? value.error : null,
   };
+  record.requestKind = getRequestKind(record);
   for (const field of TOKEN_FIELDS) record[field] = number(value[field]);
   return record;
 }
@@ -147,7 +151,7 @@ export function createSnapshotPersistence(directory, getSnapshot) {
 
 function invalidQuery() { throw new TypeError('invalid_query'); }
 export function parseMonitorFilters(params = new URLSearchParams()) {
-  const allowed = new Set(['keyId', 'model', 'status', 'q', 'from', 'to', 'page', 'pageSize']);
+  const allowed = new Set(['keyId', 'model', 'status', 'q', 'from', 'to', 'page', 'pageSize', 'requestKind', 'ip']);
   for (const key of params.keys()) if (!allowed.has(key) || params.getAll(key).length !== 1) invalidQuery();
   const getText = (key, limit) => {
     const value = params.get(key);
@@ -158,6 +162,11 @@ export function parseMonitorFilters(params = new URLSearchParams()) {
   if (keyId !== null && keyId !== 'none' && !/^[a-f0-9]{64}$/.test(keyId)) invalidQuery();
   const status = getText('status', 16);
   if (status !== null && !STATUSES.has(status)) invalidQuery();
+  const requestKind = getText('requestKind', 16);
+  if (requestKind !== null && !['model', 'other'].includes(requestKind)) invalidQuery();
+  const rawIp = getText('ip', 45);
+  const ip = normalizeIp(rawIp);
+  if (rawIp !== null && ip === null) invalidQuery();
   const timestamp = key => {
     const value = getText(key, 40);
     if (value === null) return null;
@@ -178,7 +187,7 @@ export function parseMonitorFilters(params = new URLSearchParams()) {
     if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > max) invalidQuery();
     return Number(value);
   };
-  return { keyId, model: getText('model', 256), status, q: getText('q', 512)?.toLowerCase() ?? null,
+  return { keyId, model: getText('model', 256), status, requestKind, ip, q: getText('q', 512)?.toLowerCase() ?? null,
     from, to, page: integer('page', 1, Number.MAX_SAFE_INTEGER), pageSize: integer('pageSize', 15, 100) };
 }
 
@@ -188,23 +197,28 @@ export function filterMonitorRequests(requests, filters) {
     return (filters.keyId === null || (filters.keyId === 'none' ? record.keyId === null : record.keyId === filters.keyId))
       && (filters.model === null || record.model === filters.model)
       && (filters.status === null || record.status === filters.status)
+      && (filters.requestKind == null || getRequestKind(record) === filters.requestKind)
+      && (filters.ip == null || normalizeIp(record.clientIp) === filters.ip)
       && (filters.from === null || time >= filters.from) && (filters.to === null || time <= filters.to)
-      && (filters.q === null || ['model', 'path', 'id', 'requestedReasoningEffort', 'reasoningEffort', 'keyLabel']
+      && (filters.q === null || ['model', 'path', 'id', 'requestedReasoningEffort', 'reasoningEffort', 'keyLabel', 'clientIp', 'peerIp']
         .some(field => typeof record[field] === 'string' && record[field].toLowerCase().includes(filters.q)));
-  }).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  }).map(record => ({ ...record, requestKind: getRequestKind(record), ...sanitizeRequestSource(record) }))
+    .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
 }
 
 export function queryMonitorSnapshot(snapshot, params = new URLSearchParams(), now = Date.now()) {
   const filters = parseMonitorFilters(params);
   const matching = filterMonitorRequests(snapshot.requests, filters);
-  const summary = { total: matching.length, success: 0, error: 0, aborted: 0, pending: 0,
+  const modelRequests = matching.filter(record => record.requestKind === 'model');
+  const summary = { total: modelRequests.length, trafficTotal: matching.length, excludedTotal: matching.length - modelRequests.length,
+    success: 0, error: 0, aborted: 0, pending: 0,
     usageReported: 0, reasoningReported: 0, inputTokens: null, outputTokens: null,
     cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null,
-    cacheHits: 0, cacheRate: null, successRate: null, avgDurationMs: null };
+    cacheHits: 0, cacheRate: null, successRate: null, failureRate: null, avgDurationMs: null };
   let eligibleInput = 0;
   let eligibleCache = 0;
   let duration = 0;
-  for (const record of matching) {
+  for (const record of modelRequests) {
     summary[record.status]++;
     if (record.usageReported) summary.usageReported++;
     if (record.reasoningTokens !== null) summary.reasoningReported++;
@@ -219,18 +233,19 @@ export function queryMonitorSnapshot(snapshot, params = new URLSearchParams(), n
   const completed = summary.total - summary.pending;
   summary.cacheRate = eligibleInput > 0 ? eligibleCache / eligibleInput : null;
   summary.successRate = completed ? summary.success / completed : null;
+  summary.failureRate = completed ? (summary.error + summary.aborted) / completed : null;
   summary.avgDurationMs = completed ? duration / completed : null;
   const models = [...new Set(snapshot.requests.map(record => record.model).filter(value => value !== null))].sort();
   const keys = [...new Map(snapshot.requests.filter(record => record.keyId !== null)
     .map(record => [record.keyId, { id: record.keyId, label: record.keyLabel }])).values()]
     .sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id));
   let end = filters.to ?? now;
-  let start = filters.from ?? (matching.length ? Date.parse(matching[matching.length - 1].startedAt) : end - 30 * 60_000);
+  let start = filters.from ?? (modelRequests.length ? Date.parse(modelRequests[modelRequests.length - 1].startedAt) : end - 30 * 60_000);
   if (filters.from === null && filters.to === null) start = Math.min(start, end - 30 * 60_000);
   if (start > end) end = start;
   const width = Math.max(1, end - start) / 30;
   const trend = Array.from({ length: 30 }, (_, i) => ({ startedAt: new Date(start + i * width).toISOString(), inputTokens: 0, outputTokens: 0 }));
-  for (const record of matching) {
+  for (const record of modelRequests) {
     const time = Date.parse(record.startedAt);
     if (time < start || time > end) continue;
     const bucket = trend[time === end ? 29 : Math.min(29, Math.max(0, Math.floor((time - start) / width)))];

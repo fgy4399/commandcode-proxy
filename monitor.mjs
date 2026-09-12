@@ -1,6 +1,8 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
+import { getRequestKind, getRequestSource, parseTrustedProxies } from './request-source.mjs';
+export { getRequestKind } from './request-source.mjs';
 import { apiKeyIdentity, createSnapshotPersistence, sanitizeFinalRecord,
   parseMonitorFilters, filterMonitorRequests, queryMonitorSnapshot, UPSTREAM_EVENT_TYPES, UPSTREAM_FINISH_REASONS } from './monitor-history.mjs';
 export { maskApiKey, apiKeyIdentity, parseMonitorFilters, filterMonitorRequests, queryMonitorSnapshot } from './monitor-history.mjs';
@@ -52,10 +54,11 @@ export function readReportedUsage(usage) {
 
 // Persistence is opt-in for embedders; production supplies a directory and the 100,000-record cap.
 export function createMonitorStore({ now = Date.now, retentionLimit = RETENTION_LIMIT,
-  retentionDays = 30, persistence = false } = {}) {
+  retentionDays = 30, persistence = false, trustedProxies = [] } = {}) {
   if (!Number.isInteger(retentionLimit) || retentionLimit < 1 || retentionLimit > 100000) throw new TypeError('invalid retentionLimit');
   if (!Number.isFinite(retentionDays) || retentionDays <= 0 || retentionDays > 30) throw new TypeError('invalid retentionDays');
   if (persistence !== false && (typeof persistence !== 'string' || !persistence)) throw new TypeError('invalid persistence directory');
+  const trustedProxyList = parseTrustedProxies(trustedProxies);
   const startedAt = new Date(now()).toISOString();
   let historyStartedAt = startedAt;
   let historyTruncated = false;
@@ -117,7 +120,7 @@ export function createMonitorStore({ now = Date.now, retentionLimit = RETENTION_
       return { startedAt, retentionLimit, retentionDays, persistenceEnabled: Boolean(disk),
         persistenceError: disk?.error ?? null, oldestAvailableAt: requests[requests.length - 1]?.record.startedAt ?? null,
         historyStartedAt, historyTruncated, requests: requests.map(({ record }) => ({
-          ...record,
+          ...record, requestKind: getRequestKind(record),
           durationMs: record.endedAt === null ? Math.max(0, time - Date.parse(record.startedAt)) : record.durationMs,
         })) };
     },
@@ -130,14 +133,17 @@ export function createMonitorStore({ now = Date.now, retentionLimit = RETENTION_
     getRequest(id) {
       prune();
       const record = requests.find(entry => entry.record.id === id)?.record;
-      return record ? { ...record, durationMs: record.endedAt === null
+      return record ? { ...record, requestKind: getRequestKind(record), durationMs: record.endedAt === null
         ? Math.max(0, now() - Date.parse(record.startedAt)) : record.durationMs } : null;
     },
     trackRequest(req, res) {
       const started = now();
+      const method = bounded(req.method, 32);
+      const path = requestPath(req.url);
+      const source = getRequestSource(req, trustedProxyList);
       const entry = { record: {
         id: randomUUID(), startedAt: new Date(started).toISOString(), endedAt: null,
-        method: bounded(req.method, 32), path: requestPath(req.url), model: null, stream: null,
+        method, path, requestKind: getRequestKind({ method, path }), ...source, model: null, stream: null,
         status: 'pending', httpStatus: null, durationMs: 0,
         requestedReasoningEffort: null, reasoningEffort: null, thinkingType: null, thinkingBudgetTokens: null,
         inputTokens: null, outputTokens: null, cachedInputTokens: null, cacheWriteTokens: null, reasoningTokens: null,

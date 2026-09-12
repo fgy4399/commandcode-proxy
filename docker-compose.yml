@@ -9,6 +9,7 @@ services:
       PORT: "3050"
       CC_MONITOR_TOKEN: "${CC_MONITOR_TOKEN:-}"
       CC_MONITOR_DIR: "/app/data/monitor"
+      CC_TRUSTED_PROXIES: "${CC_TRUSTED_PROXIES:-}"
     volumes:
       - monitor-data:/app/data/monitor
     restart: unless-stopped
