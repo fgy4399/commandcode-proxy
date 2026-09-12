@@ -142,7 +142,10 @@ async function refreshCCVersion() {
   try {
     const url = 'https://registry.npmjs.org/command-code/latest';
     const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) throw new Error(`npm responded with ${res.status}`);
+    if (!res.ok) {
+      log('warn', 'CC Version request failed', { status: res.status, body: summarizeUpstreamError(await readUpstreamError(res)) });
+      return;
+    }
     const pkg = await res.json();
     if (pkg.version && typeof pkg.version === 'string') {
       CC_VERSION = pkg.version;
@@ -215,6 +218,57 @@ function log(level, msg, data) {
   if (CFG.logFile) {
     try { appendFileSync(CFG.logFile, line + '\n', 'utf-8'); } catch {}
   }
+}
+
+// Error bodies can echo prompts and credentials. Inspect only bounded structured
+// fields and log fixed categories, never arbitrary provider text or header values.
+export function summarizeUpstreamError(text, apiKey = '', limit = 500) {
+  const cap = Number.isFinite(limit) ? Math.max(0, Math.min(500, limit)) : 500;
+  if (typeof text !== 'string' || !text) return ''.slice(0, cap);
+  if (text.length > 8192) return 'Upstream error body omitted (exceeds 8192 characters)'.slice(0, cap);
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { return 'Unstructured upstream error body omitted'.slice(0, cap); }
+  const error = parsed?.error && typeof parsed.error === 'object' ? parsed.error : parsed;
+  if (!error || typeof error !== 'object') return 'Upstream error body omitted'.slice(0, cap);
+  let fields = ['code', 'type', 'message'].map(key => typeof error[key] === 'string' ? error[key].slice(0, 1024) : '').join(' ');
+  if (typeof apiKey === 'string' && apiKey && apiKey.length <= 8192) fields = fields.split(apiKey).join('[redacted]');
+  fields = fields.replace(/\bBearer\s+[^\s"',;]+|\b(?:token[_-]?user[_-]|user[_-]|sk-)[a-z0-9_.:/+=-]+/gi, '[redacted]');
+  const categories = [
+    [/rate[_ -]?limit|too many requests/i, 'rate_limit_error'],
+    [/unauthori[sz]ed|authentication|invalid.{0,12}(?:key|token)|forbidden/i, 'authentication_error'],
+    [/payment|billing|quota|credit/i, 'billing_error'],
+    [/validat|invalid[_ -]?request|bad request/i, 'invalid_request_error'],
+    [/timeout|timed out/i, 'upstream_timeout'],
+    [/unavailable|overload/i, 'temporarily_unavailable'],
+    [/not[_ -]?found/i, 'not_found'],
+  ];
+  const category = categories.find(([pattern]) => pattern.test(fields))?.[1] || 'upstream_error';
+  return `Structured upstream error: ${category}`.slice(0, cap);
+}
+
+async function readUpstreamError(response) {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parts = [];
+  let bytes = 0;
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('UPSTREAM_ERROR_BODY_TIMEOUT')),
+      Math.min(5000, STREAM_IDLE_TIMEOUT_MS, NONSTREAM_IDLE_TIMEOUT_MS));
+  });
+  try {
+    while (true) {
+      const { done, value } = await Promise.race([reader.read(), expired]);
+      if (done) return parts.join('') + decoder.decode();
+      bytes += value.byteLength;
+      if (bytes > 8192) return '{"error":{"message":"Upstream error body omitted: size limit"}}';
+      parts.push(decoder.decode(value, { stream: true }));
+    }
+  } catch (error) {
+    return error.message === 'UPSTREAM_ERROR_BODY_TIMEOUT'
+      ? '{"error":{"message":"Upstream error body read timed out"}}' : '';
+  } finally { clearTimeout(timer); void reader.cancel().catch(() => {}); }
 }
 
 // ── 会话管理 ───────────────────────────────────────
@@ -314,8 +368,8 @@ async function ensureInitialized(apiKey, signal) {
       fetch(`${CFG.apiBase}/alpha/fingerprint/record`, {
         method: 'POST', headers, signal,
         body: JSON.stringify(fingerprint),
-      }).then(r => {
-        if (!r.ok) log('warn', 'Fingerprint record failed', { status: r.status });
+      }).then(async r => {
+        if (!r.ok) log('warn', 'Fingerprint record failed', { status: r.status, body: summarizeUpstreamError(await readUpstreamError(r), apiKey) });
         else log('info', 'Fingerprint recorded');
       }).catch(e => {
         if (e.name !== 'AbortError') log('warn', 'Fingerprint record error', { error: e.message });
@@ -332,8 +386,8 @@ async function ensureInitialized(apiKey, signal) {
             os: `${fingerprint.components.platform}-${fingerprint.components.arch}`,
           },
         }),
-      }).then(r => {
-        if (!r.ok) log('warn', 'Lifecycle event failed', { status: r.status });
+      }).then(async r => {
+        if (!r.ok) log('warn', 'Lifecycle event failed', { status: r.status, body: summarizeUpstreamError(await readUpstreamError(r), apiKey) });
         else log('info', 'Lifecycle event sent');
       }).catch(e => {
         if (e.name !== 'AbortError') log('warn', 'Lifecycle event error', { error: e.message });
@@ -439,7 +493,7 @@ function getEnvironment() {
 // ── CC 请求体构建 ─────────────────────────────────
 
 function buildCcRequest(openaiReq) {
-  const { model, messages, max_tokens, temperature, tools, stream, reasoning_effort, tool_choice, parallel_tool_calls, prompt_cache_key } = openaiReq;
+  const { model, messages, max_tokens, temperature, top_p, tools, stream, reasoning_effort, tool_choice, parallel_tool_calls, prompt_cache_key } = openaiReq;
 
   // 提取系统提示，OpenAI 的 system 与 developer 均映射为系统提示
   // 数组型 content 必须展开取 text 后拼成「字符串」，而不是转成 JSON 字符串，
@@ -488,12 +542,19 @@ function buildCcRequest(openaiReq) {
     }
     if (msg.role === 'assistant') {
       const parts = [];
-      if (msg.content && typeof msg.content === 'string') {
-        parts.push({ type: 'text', text: msg.content });
-      } else if (msg.content && Array.isArray(msg.content)) {
-        for (const part of msg.content) {
-          if (part.type === 'text') parts.push(part);
+      // Replay reasoning before text and tool calls, once even when clients also
+      // include the same reasoning in the content array.
+      const content = Array.isArray(msg.content) ? msg.content.filter(Boolean) : [];
+      if (typeof msg.reasoning_content === 'string' && msg.reasoning_content) {
+        parts.push({ type: 'reasoning', text: msg.reasoning_content });
+      } else {
+        for (const part of content) {
+          if (part.type === 'reasoning' && typeof part.text === 'string' && part.text) parts.push(part);
         }
+      }
+      if (typeof msg.content === 'string' && msg.content) parts.push({ type: 'text', text: msg.content });
+      for (const part of content) {
+        if (part.type === 'text' && typeof part.text === 'string' && part.text) parts.push(part);
       }
       if (msg.tool_calls) {
         for (const tc of msg.tool_calls) {
@@ -571,6 +632,7 @@ function buildCcRequest(openaiReq) {
   if (temperature !== undefined) {
     body.params.temperature = temperature;
   }
+  if (top_p !== undefined) body.params.top_p = top_p;
   if (reasoning_effort !== undefined) {
     body.params.reasoning_effort = reasoning_effort;
   }
@@ -682,8 +744,7 @@ function createSseTranslator(model, completionId, created, monitor) {
           break;
 
         case 'error': {
-          const msg = event.error?.message || event.message || 'Unknown error';
-          log('warn', 'CC stream error', { message: msg });
+          log('warn', 'CC stream error', { code: 'upstream_error' });
           // Don't emit a finish_reason chunk — let the natural stream termination
           // handle it. Otherwise a subsequent finish(tool_calls) would be ignored
           // by downstream agent loops that stop at the first finish_reason.
@@ -709,6 +770,9 @@ function createSseTranslator(model, completionId, created, monitor) {
     /** 获取 SSE 结束标记 */
     getDoneEvent() {
       return 'data: [DONE]\n\n';
+    },
+    getErrorEvent(error) {
+      return `data: ${JSON.stringify({ error })}\n\n`;
     },
   };
 }
@@ -739,8 +803,8 @@ function completionError(state, monitor) {
   const code = state.rejection();
   if (!code) return null;
   log('warn', 'OpenAI completion rejected', { code, ...state.diagnostics() });
-  if (state.errorEvent) return mapCcEventError(state.errorEvent);
   monitor?.markError(code);
+  if (state.errorEvent) return mapCcEventError(state.errorEvent);
   if (code === 'zero_output') {
     return { status: 429, body: { error: {
       message: 'Empty response from upstream (zero output tokens)', type: 'rate_limit_error',
@@ -968,10 +1032,10 @@ async function forwardToCC(body, apiKey, incomingHeaders = {}, signal, promptCac
 
 // ── 路由 ────────────────────────────────────────────
 
-async function handleChatCompletions(req, res) {
+async function handleChatCompletions(req, res, preparedRequest, responseOptions) {
   let openaiReq;
   try {
-    openaiReq = await readBody(req);
+    openaiReq = preparedRequest ?? await readBody(req);
   } catch (e) {
     if (e.statusCode === 413) {
       sendJSON(res, 413, { error: { message: e.message, type: 'invalid_request_error' } });
@@ -996,6 +1060,7 @@ async function handleChatCompletions(req, res) {
   const model = openaiReq.model || 'deepseek/deepseek-v4-flash';
   const completionId = `chatcmpl-${randomUUID().slice(0, 12)}`;
   const created = nowUnix();
+  const requestPath = responseOptions ? '/v1/responses' : '/v1/chat/completions';
 
   // 构建 CC 请求体
   const ccBody = buildCcRequest(openaiReq);
@@ -1013,7 +1078,7 @@ async function handleChatCompletions(req, res) {
     aborted = true;
     abortController.abort();
     log('warn', 'Client disconnected', {
-      path: '/v1/chat/completions', model, completionId, streaming: stream,
+      path: requestPath, model, completionId, streaming: stream,
       elapsedMs: Date.now() - startTime, bytesSent: bytesReceived,
       lastCcEvent: lastCcEvent || '(none)', keepaliveCount,
       inputTokens: translator?.inputTokens ?? null,
@@ -1032,8 +1097,8 @@ async function handleChatCompletions(req, res) {
     const ccResponse = await forwardToCC(ccBody, apiKey, req.headers, abortController.signal, openaiReq.prompt_cache_key, res.monitor);
 
     if (!ccResponse.ok) {
-      const errorText = await ccResponse.text().catch(() => '');
-      log('error', 'CC API error', { status: ccResponse.status });
+      const errorText = await readUpstreamError(ccResponse);
+      log('error', 'CC API error', { status: ccResponse.status, path: requestPath, body: summarizeUpstreamError(errorText, apiKey) });
       const mapped = mapCcError(ccResponse.status, errorText);
       sendJSON(res, mapped.status, mapped.body);
       return;
@@ -1041,7 +1106,9 @@ async function handleChatCompletions(req, res) {
 
     if (stream) {
       // ── 流式响应 ──
-      translator = createSseTranslator(model, completionId, created, res.monitor);
+      translator = responseOptions
+        ? createResponsesSseTranslator(model, newResponsesId('resp_'), created, res.monitor, responseOptions)
+        : createSseTranslator(model, completionId, created, res.monitor);
       let buffer = '';
       let started = false; // 延迟写 200 header，超时/output=0 时返回 JSON 429/502 让 SDK 自动重试
       const decoder = new TextDecoder();
@@ -1123,7 +1190,7 @@ async function handleChatCompletions(req, res) {
               sendJSON(res, rejected.status, rejected.body);
               return;
             }
-            try { res.write(`data: ${JSON.stringify(rejected.body)}\n\n`); } catch {}
+            try { res.write(translator.getErrorEvent(rejected.body.error)); } catch {}
           } else {
             if (!started) {
               res.writeHead(200, {
@@ -1145,7 +1212,7 @@ async function handleChatCompletions(req, res) {
         } else if (e.message === 'STREAM_IDLE_TIMEOUT') {
           res.monitor?.markError('stream_timeout');
           log('warn', 'Stream idle timeout', {
-            path: '/v1/chat/completions',
+            path: requestPath,
             model,
             streaming: true,
             timeoutMs: STREAM_IDLE_TIMEOUT_MS,
@@ -1168,7 +1235,7 @@ async function handleChatCompletions(req, res) {
             return;
           }
           if (!res.writableEnded) {
-            try { res.write(`data: ${JSON.stringify({ error: { message: timeoutMsg, type: 'rate_limit_error' }, retry_after: 5 })}\n\n`); } catch {}
+            try { res.write(translator.getErrorEvent({ message: timeoutMsg, type: 'rate_limit_error' })); } catch {}
             try { res.destroy(); } catch {}
           }
         } else {
@@ -1180,7 +1247,7 @@ async function handleChatCompletions(req, res) {
             return;
           }
           if (!res.writableEnded) {
-            try { res.write(`data: ${JSON.stringify({ error: { message: e.message, type: 'proxy_error' } })}\n\n`); } catch {}
+            try { res.write(translator.getErrorEvent({ message: e.message, type: 'proxy_error' })); } catch {}
           }
         }
       } finally {
@@ -1230,7 +1297,7 @@ async function handleChatCompletions(req, res) {
                 break;
               case 'error':
                 lastCcEvent = event.type;
-                log('warn', 'CC stream error (non-stream)', { message: event.error?.message || event.message });
+                log('warn', 'CC stream error (non-stream)', { code: 'upstream_error' });
                 break;
               case 'reasoning-end': case 'provider-metadata': case 'tool-input-start': case 'tool-input-delta': case 'tool-input-end': case 'tool-error': case 'text-end':
                 // Silent - no user-visible content
@@ -1275,6 +1342,11 @@ async function handleChatCompletions(req, res) {
       }
 
       consecutiveTimeouts = 0;
+      if (responseOptions) {
+        sendJSON(res, 200, buildResponsesObject(newResponsesId('resp_'), model, created,
+          fullText, reasoningContent, toolCalls, state, { ...responseOptions, finishReason: state.finishReason }));
+        return;
+      }
       sendJSON(res, 200, {
         id: completionId,
         object: 'chat.completion',
@@ -1295,14 +1367,14 @@ async function handleChatCompletions(req, res) {
   } catch (e) {
     if (abortController.signal.aborted) {
       log('warn', 'Request cancelled (client disconnected before CC response)', {
-        path: '/v1/chat/completions',
+        path: requestPath,
         model,
         completionId,
       });
     } else if (e.message === 'STREAM_IDLE_TIMEOUT') {
       res.monitor?.markError('stream_timeout');
       log('warn', 'Stream idle timeout', {
-        path: '/v1/chat/completions',
+        path: requestPath,
         model,
         streaming: false,
         timeoutMs: NONSTREAM_IDLE_TIMEOUT_MS,
@@ -1414,11 +1486,16 @@ function convertAnthropicToOpenAI(anthropicReq) {
   for (const msg of messages) {
     if (msg.role === 'assistant') {
       let textContent = '';
+      // Anthropic 的 thinking block 承载思考内容，需转成 reasoning_content
+      // 交给 buildCcRequest 回传，否则 CC 会因缺少 reasoning 而拒绝
+      let thinkingContent = '';
       const toolCalls = [];
       const blocks = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content || '' }];
       for (const block of blocks) {
         if (block.type === 'text') {
           textContent += block.text || '';
+        } else if (block.type === 'thinking') {
+          thinkingContent += block.thinking || '';
         } else if (block.type === 'tool_use') {
           toolNameFromId[block.id] = block.name;
           toolCalls.push({
@@ -1432,6 +1509,7 @@ function convertAnthropicToOpenAI(anthropicReq) {
         }
       }
       const assistantMsg = { role: 'assistant', content: textContent || null };
+      if (thinkingContent) assistantMsg.reasoning_content = thinkingContent;
       if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls;
       openaiMessages.push(assistantMsg);
     } else if (msg.role === 'user') {
@@ -1538,6 +1616,7 @@ async function* createAnthropicSseTranslator(response, model, messageId, ctx) {
   let outputTokens = 0;
   let cachedInputTokens = 0;
   let cacheWriteTokens = 0;
+  let noCacheTokens = -1;   // -1 = 上游未提供该字段，改用减法兜底
   let stopReason = null;
   let hasError = false;
   let currentThinkingText = ''; // accumulated thinking text for the open block
@@ -1677,6 +1756,9 @@ async function* createAnthropicSseTranslator(response, model, messageId, ctx) {
               outputTokens = u.outputTokens ?? outputTokens;
               cachedInputTokens = u.cachedInputTokens ?? u.inputTokenDetails?.cacheReadTokens ?? cachedInputTokens;
               cacheWriteTokens = u.cacheWriteTokens ?? u.inputTokenDetails?.cacheWriteTokens ?? cacheWriteTokens;
+              if (Number.isFinite(u.inputTokenDetails?.noCacheTokens) && u.inputTokenDetails.noCacheTokens >= 0) {
+                noCacheTokens = u.inputTokenDetails.noCacheTokens;
+              }
               ctx.inputTokens = inputTokens;
               ctx.outputTokens = outputTokens;
               ctx.cachedInputTokens = cachedInputTokens;
@@ -1705,7 +1787,9 @@ async function* createAnthropicSseTranslator(response, model, messageId, ctx) {
       if (done) break;
     }
 
-    // 无论上游是否回报 usage，都把本地计数同步进 ctx（零输出判定与 message_delta 账单依赖它）
+    // 无论上游是否回报 usage，都把本地计数同步进 ctx（零输出判定与超时日志依赖它）。
+    // 注意：ctx.inputTokens 保存的是上游原始总数，仅供日志排查；
+    // message_delta converts the input buckets with toAnthropicInputUsage.
     ctx.inputTokens = inputTokens;
     ctx.outputTokens = outputTokens;
     ctx.cachedInputTokens = cachedInputTokens;
@@ -1724,7 +1808,9 @@ async function* createAnthropicSseTranslator(response, model, messageId, ctx) {
         yield `event: message_delta\ndata: ${JSON.stringify({
           type: 'message_delta',
           delta: { stop_reason: stopReason || 'end_turn' },
-          usage: { output_tokens: outputTokens, ...toAnthropicInputUsage({inputTokens, cachedInputTokens, cacheWriteTokens}) },
+          usage: { output_tokens: outputTokens, ...toAnthropicInputUsage({
+            inputTokens, cachedInputTokens, cacheWriteTokens, inputTokenDetails: { noCacheTokens },
+          }) },
         })}\n\n`;
 
         yield `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`;
@@ -1807,8 +1893,8 @@ async function handleMessages(req, res) {
     const ccResponse = await forwardToCC(ccBody, apiKey, req.headers, abortController.signal, undefined, res.monitor);
 
     if (!ccResponse.ok) {
-      const errorText = await ccResponse.text().catch(() => '');
-      log('error', 'CC API error (Anthropic)', { status: ccResponse.status });
+      const errorText = await readUpstreamError(ccResponse);
+      log('error', 'CC API error (Anthropic)', { status: ccResponse.status, body: summarizeUpstreamError(errorText, apiKey) });
       const mapped = mapCcError(ccResponse.status, errorText);
       sendAnthropicError(res, mapped.status, mapped.body.error.type, mapped.body.error.message);
       return;
@@ -1994,7 +2080,7 @@ async function handleMessages(req, res) {
                 break;
               case 'error':
                 lastCcEvent = event.type;
-                log('warn', 'CC error (Anthropic non-stream)', { message: event.error?.message || event.message });
+                log('warn', 'CC error (Anthropic non-stream)', { code: 'upstream_error' });
                 upstreamError = mapCcEventError(event);
                 break;
               case 'reasoning-end': case 'provider-metadata': case 'tool-input-start': case 'tool-input-delta': case 'tool-input-end': case 'tool-error': case 'text-end':
@@ -2117,13 +2203,436 @@ async function fetchModels(apiKey) {
         return dynamicModels;
       }
     }
-    log('warn', 'Provider models fetch failed, using hardcoded list', { status: response.status });
+    log('warn', 'Provider models fetch failed, using hardcoded list', { status: response.status,
+      body: response.ok ? 'Invalid models response' : summarizeUpstreamError(await readUpstreamError(response), apiKey) });
   } catch (e) {
     log('warn', 'Provider models fetch error, using hardcoded list', { error: e.message });
   }
 
   // Fallback to hardcoded MODELS
   return MODELS;
+}
+
+// ── OpenAI Responses API（/v1/responses）──────────────
+// 供 Codex 等使用 Responses 协议的客户端接入。代理仍是无状态转换层：
+// 把 input 翻译成内部 Chat 格式，复用同一套 CC 转发管线。
+// 不支持 previous_response_id / store（需要服务端保存会话，与无状态定位冲突），
+// 收到直接 400，避免静默降级成错误答案。
+
+function newResponsesId(prefix) {
+  return prefix + randomUUID().replace(/-/g, '').slice(0, 24);
+}
+
+export function convertResponsesToChat(respReq) {
+  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const invalid = message => { throw new Error(message); };
+  if (!object(respReq)) invalid('Expected a JSON object');
+  if (respReq.previous_response_id != null) invalid('previous_response_id is not supported; send the full input each turn');
+  if (respReq.store === true) invalid('store:true is not supported; this proxy is stateless');
+  for (const key of ['stream', 'store', 'parallel_tool_calls', 'background']) {
+    if (respReq[key] !== undefined && typeof respReq[key] !== 'boolean') invalid(`${key} must be a boolean`);
+  }
+  if (respReq.model !== undefined && (typeof respReq.model !== 'string' || !respReq.model.trim())) invalid('model must be a nonempty string');
+  if (respReq.instructions != null && typeof respReq.instructions !== 'string') invalid('instructions must be a string');
+  if (respReq.prompt_cache_key !== undefined && typeof respReq.prompt_cache_key !== 'string') invalid('prompt_cache_key must be a string');
+  if (respReq.max_output_tokens != null && (!Number.isInteger(respReq.max_output_tokens) || respReq.max_output_tokens <= 0)) invalid('max_output_tokens must be a positive integer');
+  for (const key of ['temperature', 'top_p']) {
+    if (respReq[key] != null && (typeof respReq[key] !== 'number' || !Number.isFinite(respReq[key]))) invalid(`${key} must be a finite number`);
+  }
+  if (respReq.reasoning != null && (!object(respReq.reasoning) || (respReq.reasoning.effort != null && typeof respReq.reasoning.effort !== 'string'))) invalid('reasoning must be an object with a string effort');
+  if (respReq.metadata != null && !object(respReq.metadata)) invalid('metadata must be an object');
+  if (respReq.background === true) invalid('background execution is not supported');
+  if (respReq.conversation != null) invalid('conversation is not supported; send the full input each turn');
+  if (respReq.text != null && (!object(respReq.text) || (respReq.text.format != null && (!object(respReq.text.format) || respReq.text.format.type !== 'text')))) invalid('Only text.format.type=text is supported');
+  if (respReq.truncation != null && respReq.truncation !== 'disabled') invalid('Only truncation=disabled is supported');
+
+  const textParts = (content, imageAllowed = false) => {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) invalid('Message content must be a string or an array');
+    return content.map(part => {
+      if (!object(part)) invalid('Content parts must be objects');
+      if (['input_text', 'output_text', 'text', 'summary_text', 'reasoning_text'].includes(part.type)) {
+        if (typeof part.text !== 'string') invalid('Text content requires a string text');
+        return { type: 'text', text: part.text };
+      }
+      if (part.type === 'input_image' && imageAllowed) {
+        if (typeof part.image_url !== 'string' || !part.image_url) invalid('input_image requires an image_url; file_id is not supported');
+        return { type: 'image_url', image_url: { url: part.image_url, ...(part.detail ? { detail: part.detail } : {}) } };
+      }
+      invalid('Unsupported content type; supported: input_text, output_text, input_image');
+    });
+  };
+  const asText = content => {
+    const parts = textParts(content);
+    return typeof parts === 'string' ? parts : parts.map(p => p.text).join('');
+  };
+  const messages = [];
+  if (respReq.instructions) messages.push({ role: 'system', content: respReq.instructions });
+  let pending = null;
+  const ensurePending = () => (pending ??= { role: 'assistant', content: null, tool_calls: [] });
+  const flushPending = () => {
+    if (!pending) return;
+    if (!pending.tool_calls.length) delete pending.tool_calls;
+    if (pending.content !== null || pending.tool_calls || pending.reasoning_content) messages.push(pending);
+    pending = null;
+  };
+  if (typeof respReq.input === 'string') {
+    messages.push({ role: 'user', content: respReq.input });
+  } else if (Array.isArray(respReq.input) && respReq.input.length) {
+    for (const item of respReq.input) {
+      if (!object(item)) invalid('input items must be objects');
+      const type = item.type ?? (item.role ? 'message' : undefined);
+      switch (type) {
+        case 'reasoning': {
+          if (item.encrypted_content != null) invalid('Encrypted reasoning is not supported; send reasoning summary or text');
+          const text = item.summary?.length ? asText(item.summary)
+            : item.content != null ? asText(item.content) : item.text != null ? asText(item.text) : '';
+          if (text) {
+            const assistant = ensurePending();
+            assistant.reasoning_content = (assistant.reasoning_content || '') + text;
+          }
+          break;
+        }
+        case 'message': {
+          if (!['user', 'assistant', 'system', 'developer'].includes(item.role)) invalid('Unsupported message role');
+          if (item.role === 'assistant') {
+            const text = asText(item.content);
+            const assistant = ensurePending();
+            assistant.content = (assistant.content || '') + text;
+          } else {
+            flushPending();
+            messages.push({ role: item.role, content: textParts(item.content, item.role === 'user') });
+          }
+          break;
+        }
+        case 'function_call':
+          if (typeof item.name !== 'string' || !item.name || typeof item.call_id !== 'string' || !item.call_id || typeof item.arguments !== 'string') invalid('function_call requires string name, call_id, and arguments');
+          ensurePending().tool_calls.push({ id: item.call_id, type: 'function', function: { name: item.name, arguments: item.arguments } });
+          break;
+        case 'function_call_output':
+          if (typeof item.call_id !== 'string' || !item.call_id) invalid('function_call_output requires call_id');
+          flushPending();
+          messages.push({ role: 'tool', tool_call_id: item.call_id, content: asText(item.output) });
+          break;
+        default:
+          invalid('Unsupported input item; supported: message, reasoning, function_call, function_call_output');
+      }
+    }
+  } else invalid('input must be a string or a nonempty array');
+  flushPending();
+  if (!messages.length) invalid('input must contain a supported message or reasoning item');
+
+  const out = { model: respReq.model, messages, stream: respReq.stream === true };
+  if (respReq.tools !== undefined) {
+    if (!Array.isArray(respReq.tools)) invalid('tools must be an array');
+    out.tools = respReq.tools.map(tool => {
+      if (!object(tool) || tool.type !== 'function') invalid('Only function tools are supported; built-in tools are not supported');
+      if (typeof tool.name !== 'string' || !tool.name) invalid('Function tools require a string name');
+      if (tool.parameters != null && !object(tool.parameters)) invalid('Function tool parameters must be an object');
+      return { type: 'function', function: { name: tool.name, description: tool.description || '', parameters: tool.parameters || { type: 'object', properties: {} } } };
+    });
+  }
+  if (respReq.tool_choice !== undefined) {
+    const choice = respReq.tool_choice;
+    if (['auto', 'none', 'required'].includes(choice)) out.tool_choice = choice;
+    else if (object(choice) && choice.type === 'function' && typeof choice.name === 'string' && choice.name) out.tool_choice = { type: 'function', function: { name: choice.name } };
+    else invalid('tool_choice must be auto, none, required, or a named function');
+  }
+  if (respReq.max_output_tokens != null) out.max_tokens = respReq.max_output_tokens;
+  for (const key of ['temperature', 'top_p', 'parallel_tool_calls', 'prompt_cache_key']) {
+    if (respReq[key] != null) out[key] = respReq[key];
+  }
+  if (respReq.reasoning?.effort != null) out.reasoning_effort = respReq.reasoning.effort;
+  return out;
+}
+
+// Responses 的 input_tokens 是总数，cached / cache_write 均为其子集 ——
+// 与 Anthropic 相反（那里 cache_read 是独立增量，必须做减法，见 issue #25）。
+// 本代理上游 CC 的 inputTokens 同样已含缓存，故此处直接沿用、不做减法。
+// 实测：total_tokens === input_tokens + output_tokens（即使 cached 占绝大多数）。
+export function buildResponsesUsage(usage) {
+  const count = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  const input = count(usage?.inputTokens);
+  const output = count(usage?.outputTokens);
+  const cached = count(usage?.cachedInputTokens) ?? count(usage?.inputTokenDetails?.cacheReadTokens);
+  const cacheWrite = count(usage?.cacheWriteTokens) ?? count(usage?.inputTokenDetails?.cacheWriteTokens);
+  const reasoning = count(usage?.reasoningTokens) ?? count(usage?.outputTokenDetails?.reasoningTokens);
+  // Missing usage is unknown, including partial reports; never fabricate zero.
+  if ([input, output, cached, cacheWrite, reasoning].every(value => value === null)) return null;
+  return {
+    input_tokens: input,
+    input_tokens_details: {
+      cached_tokens: cached,
+      cache_write_tokens: cacheWrite,
+    },
+    output_tokens: output,
+    output_tokens_details: { reasoning_tokens: reasoning },
+    total_tokens: input === null || output === null ? null : input + output,
+  };
+}
+
+function buildResponsesOutput(fullText, thinkingText, toolCalls, truncated = false) {
+  const output = [];
+  if (thinkingText) {
+    output.push({ type: 'reasoning', id: newResponsesId('rs_'), summary: [{ type: 'summary_text', text: thinkingText }] });
+  }
+  if (fullText) {
+    output.push({
+      type: 'message', id: newResponsesId('msg_'), status: truncated ? 'incomplete' : 'completed', role: 'assistant',
+      content: [{ type: 'output_text', text: fullText, annotations: [] }],
+    });
+  }
+  for (const tc of (toolCalls || [])) {
+    const rawArgs = tc.function ? tc.function.arguments : '{}';
+    output.push({
+      type: 'function_call', id: newResponsesId('fc_'), call_id: tc.id,
+      name: tc.function ? (tc.function.name || '') : '',
+      arguments: typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs || {}),
+      status: 'completed',
+    });
+  }
+  return output;
+}
+
+function buildResponsesObject(responseId, model, created, fullText, thinkingText, toolCalls, usage, opts) {
+  const o = opts || {};
+  const truncated = o.finishReason === 'length';
+  return {
+    id: responseId,
+    object: 'response',
+    created_at: created,
+    status: truncated ? 'incomplete' : 'completed',
+    completed_at: nowUnix(),
+    error: null,
+    incomplete_details: truncated ? { reason: 'max_output_tokens' } : null,
+    instructions: o.instructions === undefined ? null : o.instructions,
+    max_output_tokens: o.max_output_tokens === undefined ? null : o.max_output_tokens,
+    model,
+    output: buildResponsesOutput(fullText, thinkingText, toolCalls, truncated),
+    output_text: fullText || '',
+    parallel_tool_calls: o.parallel_tool_calls ?? true,
+    previous_response_id: null,
+    reasoning: o.reasoning || null,
+    store: false,
+    temperature: o.temperature === undefined ? 1 : o.temperature,
+    text: { format: { type: 'text' } },
+    tool_choice: o.tool_choice || 'auto',
+    tools: o.tools || [],
+    top_p: o.top_p === undefined ? 1 : o.top_p,
+    truncation: 'disabled',
+    usage: buildResponsesUsage(usage),
+    user: null,
+    metadata: o.metadata || {},
+  };
+}
+
+function sendResponsesError(res, status, type, message, retryAfter) {
+  const body = { error: { message, type, code: null, param: null } };
+  if (retryAfter !== undefined) body.retry_after = retryAfter;
+  sendJSON(res, status, body);
+}
+
+// CC NDJSON → Responses 具名 SSE 事件（每个事件都必需的 sequence_number 递增发送）
+export function createResponsesSseTranslator(model, responseId, created, monitor, options = {}) {
+  let seq = 0;
+  const sse = (type, data) => 'event: ' + type + '\ndata: ' + JSON.stringify(Object.assign({ type, sequence_number: seq++ }, data)) + '\n\n';
+  let createdSent = false;
+  let current = null;
+  let outputIndex = 0;
+  const doneItems = [];
+  const state = createCompletionState();
+  let textAcc = '';
+  let terminalSent = false;
+
+  const baseResponse = (status, output) => ({
+    ...buildResponsesObject(responseId, model, created, '', '', [], null, options),
+    status, completed_at: null, output: output || [],
+  });
+
+  function startResponse() {
+    createdSent = true;
+    return [
+      sse('response.created', { response: baseResponse('in_progress') }),
+      sse('response.in_progress', { response: baseResponse('in_progress') }),
+    ];
+  }
+
+  function closeItem(truncated = false) {
+    if (!current) return [];
+    const out = [];
+    const item = current.item;
+    const idx = current.index;
+    if (current.kind === 'message') {
+      out.push(sse('response.output_text.done', { item_id: item.id, output_index: idx, content_index: 0, text: current.textBuf, logprobs: [] }));
+      out.push(sse('response.content_part.done', {
+        item_id: item.id, output_index: idx, content_index: 0,
+        part: { type: 'output_text', text: current.textBuf, annotations: [] },
+      }));
+      item.content = [{ type: 'output_text', text: current.textBuf, annotations: [] }];
+      item.status = truncated ? 'incomplete' : 'completed';
+    } else if (current.kind === 'function_call') {
+      out.push(sse('response.function_call_arguments.done', { item_id: item.id, output_index: idx, arguments: item.arguments }));
+      item.status = 'completed';
+    } else if (current.kind === 'reasoning') {
+      out.push(sse('response.reasoning_summary_text.done', { item_id: item.id, output_index: idx, summary_index: 0, text: current.textBuf }));
+      out.push(sse('response.reasoning_summary_part.done', {
+        item_id: item.id, output_index: idx, summary_index: 0,
+        part: { type: 'summary_text', text: current.textBuf },
+      }));
+      item.summary = [{ type: 'summary_text', text: current.textBuf }];
+      item.status = 'completed';
+    }
+    out.push(sse('response.output_item.done', { output_index: idx, item }));
+    doneItems.push(item);
+    current = null;
+    return out;
+  }
+
+  function openItem(kind, item) {
+    const out = closeItem();
+    current = { kind, index: outputIndex++, item, textBuf: '' };
+    out.push(sse('response.output_item.added', { output_index: current.index, item }));
+    if (kind === 'message') {
+      out.push(sse('response.content_part.added', {
+        item_id: item.id, output_index: current.index, content_index: 0,
+        part: { type: 'output_text', text: '', annotations: [] },
+      }));
+    } else if (kind === 'reasoning') {
+      out.push(sse('response.reasoning_summary_part.added', {
+        item_id: item.id, output_index: current.index, summary_index: 0,
+        part: { type: 'summary_text', text: '' },
+      }));
+    }
+    return out;
+  }
+
+  return {
+    state,
+    get lastCcEvent() { return state.lastEvent; },
+    get inputTokens() { return state.inputTokens; },
+    get outputTokens() { return state.outputTokens; },
+    get cachedInputTokens() { return state.cachedInputTokens; },
+    get started() { return createdSent; },
+    get stopReason() { return state.finishReason; },
+    parseLine(line) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === '[DONE]' || trimmed.startsWith(':')) return null;
+      let event;
+      try { event = JSON.parse(trimmed); } catch { return null; }
+      if (!event?.type || state.sawFinish || state.errorEvent) return null;
+      monitor?.observeEvent(event);
+      state.observe(event);
+      const out = [];
+
+      switch (event.type) {
+        case 'text-start': case 'reasoning-start': case 'start': case 'start-step':
+          break;
+
+        case 'text-delta': {
+          const text = event.text || event.delta || '';
+          if (!text) break;
+          if (!createdSent) out.push.apply(out, startResponse());
+          if (!current || current.kind !== 'message') {
+            out.push.apply(out, openItem('message', { type: 'message', id: newResponsesId('msg_'), status: 'in_progress', role: 'assistant', content: [] }));
+          }
+          current.textBuf += text;
+          textAcc += text;
+          out.push(sse('response.output_text.delta', { item_id: current.item.id, output_index: current.index, content_index: 0, delta: text, logprobs: [] }));
+          break;
+        }
+
+        case 'reasoning-delta': {
+          const text = event.text || event.delta || '';
+          if (!text) break;
+          if (!createdSent) out.push.apply(out, startResponse());
+          if (!current || current.kind !== 'reasoning') {
+            out.push.apply(out, openItem('reasoning', { type: 'reasoning', id: newResponsesId('rs_'), summary: [], status: 'in_progress' }));
+          }
+          current.textBuf += text;
+          out.push(sse('response.reasoning_summary_text.delta', {
+            item_id: current.item.id, output_index: current.index, summary_index: 0, delta: text,
+          }));
+          break;
+        }
+
+        case 'tool-call': {
+          if (!createdSent) out.push.apply(out, startResponse());
+          const callId = event.toolCallId || newResponsesId('call_');
+          const args = typeof event.input === 'string' ? event.input : JSON.stringify(event.input || {});
+          out.push.apply(out, openItem('function_call', {
+            type: 'function_call', id: newResponsesId('fc_'), call_id: callId,
+            name: event.toolName || '', arguments: '', status: 'in_progress',
+          }));
+          current.item.arguments = args;
+          out.push(sse('response.function_call_arguments.delta', { item_id: current.item.id, output_index: current.index, delta: args }));
+          break;
+        }
+
+        case 'finish-step':
+        case 'finish':
+        case 'error':
+          // Shared state validates terminal events before the handler emits success.
+          break;
+
+        default: break;
+      }
+      return out.length ? out : null;
+    },
+    getFinishEvent() {
+      if (terminalSent) return '';
+      const rejection = state.rejection();
+      if (rejection) return this.getErrorEvent({ code: rejection, message: 'Upstream response did not complete successfully' });
+      terminalSent = true;
+      const out = createdSent ? [] : startResponse();
+      const truncated = state.finishReason === 'length';
+      out.push(...closeItem(truncated));
+      out.push(sse(truncated ? 'response.incomplete' : 'response.completed', {
+        response: {
+          ...baseResponse(truncated ? 'incomplete' : 'completed', doneItems.slice()),
+          completed_at: nowUnix(), output_text: textAcc,
+          incomplete_details: truncated ? { reason: 'max_output_tokens' } : null,
+          usage: buildResponsesUsage(state),
+        },
+      }));
+      return out.join('');
+    },
+    getDoneEvent() { return ''; },
+    getErrorEvent(error) {
+      if (terminalSent) return '';
+      terminalSent = true;
+      monitor?.markError(error.code || error.type || 'upstream_error');
+      const out = createdSent ? [] : startResponse();
+      out.push(sse('response.failed', { response: {
+        ...baseResponse('failed', doneItems.slice()),
+        error: { code: error.code || error.type || 'upstream_error', message: error.message || 'Upstream error' },
+      } }));
+      return out.join('');
+    },
+  };
+}
+
+async function handleResponses(req, res) {
+  let body;
+  try {
+    body = await readBody(req);
+  } catch (error) {
+    sendResponsesError(res, error.statusCode === 413 ? 413 : 400,
+      'invalid_request_error', error.statusCode === 413 ? error.message : 'Invalid JSON body');
+    return;
+  }
+  // Record requested settings even when validation or authentication rejects it.
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    res.monitor?.setMetadata({ ...body, max_tokens: body.max_output_tokens,
+      reasoning_effort: body.reasoning?.effort }, 'deepseek/deepseek-v4-flash');
+  }
+  let chatRequest;
+  try {
+    chatRequest = convertResponsesToChat(body);
+  } catch (error) {
+    sendResponsesError(res, 400, 'invalid_request_error', error.message);
+    return;
+  }
+  await handleChatCompletions(req, res, chatRequest, body);
 }
 
 async function handleModels(req, res) {
@@ -2200,6 +2709,8 @@ const server = http.createServer(async (req, res) => {
       await handleChatCompletions(req, res);
     } else if (url.pathname === '/v1/messages' && req.method === 'POST') {
       await handleMessages(req, res);
+    } else if (url.pathname === '/v1/responses' && req.method === 'POST') {
+      await handleResponses(req, res);
     } else if (url.pathname === '/v1/models' && req.method === 'GET') {
       await handleModels(req, res);
     } else if (url.pathname === '/health' || url.pathname === '/') {

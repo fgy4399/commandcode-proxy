@@ -1,10 +1,11 @@
 // Completion validity is independent of whether the provider reports token usage.
-const counters = ['inputTokens', 'outputTokens', 'cachedInputTokens', 'reasoningTokens'];
+const counters = ['inputTokens', 'outputTokens', 'cachedInputTokens', 'reasoningTokens', 'cacheWriteTokens'];
 const isCount = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 function reportedCount(usage, key) {
   if (isCount(usage?.[key])) return usage[key];
   const nested = key === 'cachedInputTokens' ? usage?.inputTokenDetails?.cacheReadTokens
-    : key === 'reasoningTokens' ? usage?.outputTokenDetails?.reasoningTokens : undefined;
+    : key === 'reasoningTokens' ? usage?.outputTokenDetails?.reasoningTokens
+    : key === 'cacheWriteTokens' ? usage?.inputTokenDetails?.cacheWriteTokens : undefined;
   return isCount(nested) ? nested : null;
 }
 
@@ -20,6 +21,7 @@ export function createCompletionState() {
     outputTokens: null,
     cachedInputTokens: null,
     reasoningTokens: null,
+    cacheWriteTokens: null,
     observe(event) {
       if (!event || typeof event !== 'object' || this.sawFinish || this.errorEvent) return;
       if (typeof event.type === 'string') this.lastEvent = event.type;
@@ -92,8 +94,15 @@ export function toAnthropicInputUsage(usage) {
     read = Math.min(read, total);
     write = Math.min(write, total - read);
   }
+  const noCache = usage?.inputTokenDetails?.noCacheTokens;
+  // Explicit uncached usage wins, including zero. Keep cache buckets authoritative;
+  // cap contradictory uncached reports to the remaining inclusive total. A lower
+  // explicit report may leave some total unclassified rather than inventing usage.
+  const uncached = isCount(noCache)
+    ? (total === null ? noCache : Math.min(noCache, total - read - write))
+    : (total === null ? 0 : total - read - write);
   return {
-    input_tokens: total === null ? 0 : Math.max(0, total - read - write),
+    input_tokens: uncached,
     cache_read_input_tokens: read,
     cache_creation_input_tokens: write,
   };

@@ -28,3 +28,21 @@ test('invalid and inconsistent cache counters never produce negative or double-c
   });
   assert.deepEqual(toAnthropicInputUsage(null), {input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0});
 });
+
+test('upstream noCacheTokens is retained without an inclusive total and checked when totals exist', () => {
+  const raw = {outputTokens: 450, inputTokenDetails: {noCacheTokens: 258, cacheReadTokens: 6528}};
+  const original = structuredClone(raw);
+  assert.deepEqual(toAnthropicInputUsage(raw), {input_tokens: 258, cache_read_input_tokens: 6528, cache_creation_input_tokens: 0});
+  assert.deepEqual(raw, original);
+  assert.deepEqual(toAnthropicInputUsage({inputTokenDetails: {noCacheTokens: 0, cacheReadTokens: 100}}), {
+    input_tokens: 0, cache_read_input_tokens: 100, cache_creation_input_tokens: 0,
+  });
+  for (const noCacheTokens of [NaN, Infinity, -1, '258']) {
+    assert.equal(toAnthropicInputUsage({inputTokens: 6786, cachedInputTokens: 6528, inputTokenDetails: {noCacheTokens}}).input_tokens, 258);
+  }
+  const consistent = {inputTokens: 120, cachedInputTokens: 80, inputTokenDetails: {cacheWriteTokens: 12, noCacheTokens: 28}};
+  assert.equal(toAnthropicInputUsage(consistent).input_tokens, 28);
+  // A contradictory optional detail must not create extra billed input beyond a known total.
+  const bounded = toAnthropicInputUsage({...consistent, inputTokenDetails: {cacheWriteTokens: 12, noCacheTokens: 120}});
+  assert.equal(bounded.input_tokens + bounded.cache_read_input_tokens + bounded.cache_creation_input_tokens, 120);
+});

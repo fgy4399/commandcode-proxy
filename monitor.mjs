@@ -197,6 +197,7 @@ export function createMonitorStore({ now = Date.now, retentionLimit = RETENTION_
           if (record.path === '/v1/messages' && effort === undefined) {
             effort = body.output_config?.effort !== undefined ? body.output_config.effort : body.thinking?.effort;
           }
+          if (record.path === '/v1/responses' && effort === undefined) effort = body.reasoning?.effort;
           record.requestedReasoningEffort = bounded(effort, 64);
           record.thinkingType = bounded(body.thinking?.type, 64);
           record.thinkingBudgetTokens = tokenCount(body.thinking?.budget_tokens);
@@ -232,8 +233,10 @@ export function createMonitorStore({ now = Date.now, retentionLimit = RETENTION_
           }
           if (event.type !== 'finish-step' && event.type !== 'finish') return;
           const total = readReportedUsage(event.totalUsage);
-          const usage = total || readReportedUsage(event.usage);
-          if (!usage) return;
+          const step = readReportedUsage(event.usage);
+          if (!total && !step) return;
+          // Match protocol output: final totals win per field, not per object.
+          const usage = Object.fromEntries(TOKEN_FIELDS.map(field => [field, total?.[field] ?? step?.[field] ?? null]));
           if (total || event.type === 'finish') {
             // Final totals replace step accumulation; never add both representations.
             // Partial final reports must not erase fields already observed in steps.

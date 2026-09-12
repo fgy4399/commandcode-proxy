@@ -31,10 +31,11 @@ curl http://127.0.0.1:3050/v1/chat/completions \
 启动后访问 **http://127.0.0.1:3050/monitor**（使用自定义端口时替换 `3050`）。顶部全局筛选支持 Key、模型、请求类型、状态、来源 IP，以及最近 **1 天、7 天、30 天、自定义时间段**（本地时区，精确到秒，包含起止时刻）。页面每 2 秒刷新；支持搜索、分页、实时详情、暂停和导出。模型统计覆盖当前筛选后的全部模型请求，不限当前页，列表和导出则包含全部匹配日志。
 
 - 记录 API 请求的开始时间、模型、协议路径、流式模式、状态、HTTP 状态和耗时，包括请求校验失败、上游错误及客户端断连。`/health`、`OPTIONS` 和监控自身请求不进入日志。
-- 模型统计仅包含 **POST `/v1/chat/completions` 和 `/v1/messages`**。`/.git/config`、`/backup.sql` 等探测路径以及模型列表等其他请求保留日志，但排除出模型数量、用量、趋势、平均耗时和成功/失败率。失败率 =（模型失败 + 模型断开）÷ 已结束模型请求数；无已结束模型请求时显示 `—`。模型接口的参数错误、鉴权错误、限流、上游失败仍计入，不能仅凭 404 状态判断扫描。旧日志按方法和路径自动重新分类。
+- 模型统计包含 **POST `/v1/chat/completions`、`/v1/messages` 和 `/v1/responses`**。`/.git/config`、`/backup.sql` 等探测路径以及模型列表等其他请求保留日志，但排除出模型数量、用量、趋势、平均耗时和成功/失败率。失败率 =（模型失败 + 模型断开）÷ 已结束模型请求数；无已结束模型请求时显示 `—`。模型接口的参数错误、鉴权错误、限流、上游失败仍计入，不能仅凭 404 状态判断扫描。旧日志按方法和路径自动重新分类。
 - 每条日志保存来源 IP `clientIp`、实际连接 IP `peerIp` 和来源依据 `ipSource`，支持 IPv4/IPv6 和来源 IP 精确筛选；关键词搜索也可匹配 IP。旧日志未采集的 IP 显示 `—`，无法补回。来源 IP 是服务器可观察到的地址，经过 NAT、VPN 或反向代理时不保证是用户设备的公网 IP。
 - 展示输入/输出 Token、缓存读取/写入、命中请求数、输入缓存命中率和当前时间段用量趋势。缓存命中率 = 缓存读取 Token ÷ **同时报告输入和缓存读取字段的请求**的输入 Token；缓存写入不计作命中，缓存读取不重复加入总 Token。
 - 监控的输入总量已包含缓存读取/写入；顶部是筛选范围内多次模型请求累计，不是当前上下文占用。Anthropic 响应的 `input_tokens` 则只包含未缓存输入：输入总量减缓存读取、减缓存写入。流式与非流式均按此转换，原始监控数据不做重复扣减。例如总输入 6786、缓存读取 6528、输出 450、无缓存写入时，返回普通输入 258，总用量为 7236，单次缓存率 96.2%。旧版会将缓存重复加到客户端总量；升级只修正新响应，客户端已保存的历史用量不会自动修改。缓存写入非零时，部分客户端的缓存率还会因分母未含缓存写入而与监控不同。
+- 上游提供有效的 `inputTokenDetails.noCacheTokens` 时，优先作为 Anthropic 未缓存输入明细；输入总量已知时仍限制其不超过扣除缓存后的余额。上游错误响应会限制读取大小和时长，并只记录安全的错误分类摘要，避免错误体回显完整 Key 或对话内容。
 - OpenAI 和 Anthropic 的流式/非流式请求都从上游原始 usage 采集。`—` 表示字段未报告，`0` 表示明确报告为零；不使用本地输出估算值。失败或中断的请求可能只有部分用量。
 - 每条日志显示实际转发的推理档位和推理 Token；详情可对照客户端档位、`thinking.type` 和思考预算。推理 Token 读取上游 `usage.reasoningTokens` 或 `usage.outputTokenDetails.reasoningTokens`（含 `totalUsage`）；未报告显示 `—`，明确为零显示 `0`，不从推理文本估算。推理 Token 属于输出明细，不重复加入总量。转发档位 `—` 表示未转发该字段或尚未发起上游请求，不表示模型没有推理。
 - 显式档位原样透传，不强制限制为 `low`/`medium`/`high`。OpenAI 使用 `reasoning_effort`；Anthropic 按 `reasoning_effort` > `output_config.effort` > `thinking.effort` 取值并转成上游 `params.reasoning_effort`。`adaptive` 未指定档位时不再默认填 `medium`；只有未指定显式档位的 `thinking.type=enabled` 预算请求保留兼容映射：≥10000→high、≥5000→medium、其余→low。上游是否支持该档位、是否返回推理明细由上游决定。
@@ -229,6 +230,25 @@ data: [DONE]
   }
 }
 ```
+
+### `POST /v1/responses`
+
+OpenAI Responses 兼容接口，可供使用 Responses 协议的客户端接入。支持 `input` 字符串或输入项数组、`instructions`、函数工具调用和工具结果回传、流式/非流式输出。
+
+```bash
+curl http://127.0.0.1:3050/v1/responses \
+  -H "Authorization: Bearer user_xxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek/deepseek-v4.1-flash","input":"你好","reasoning":{"effort":"high"},"max_output_tokens":1024,"store":false,"stream":true}'
+```
+
+- `reasoning.effort` 原样转换为上游 `reasoning_effort`；`max_output_tokens` 映射为生成上限。缓存读取包含在 `usage.input_tokens` 中，不重复加总。
+- 函数工具使用扁平定义 `{ "type": "function", "name": "...", "parameters": {...} }`，执行结果通过 `function_call_output` 输入项回传；工具由客户端执行。
+- 流式返回具名 SSE 事件及递增 `sequence_number`；正常结束为 `response.completed`，输出达到上限为 `response.incomplete`（`max_output_tokens`）。实际断流或上游报错不会伪装成 completed。
+- 与现有生成接口共用监控、Key/IP、背压、超时和断连清理规则；收到正式结束但上游未报告完整 usage 时不伪造零用量。
+- **不支持** `previous_response_id`、`store: true` 或 `web_search`/`file_search`/`code_interpreter` 等服务端内建工具；这些请求返回 400。多轮对话请由客户端提供完整 `input` 历史。
+
+Chat Completions 历史中的 `reasoning_content`、Anthropic 的 `thinking` 块，以及 Responses 的 reasoning 输入项都会随历史回传，避免 DeepSeek 思考模式因缺少历史推理内容拒绝后续请求。
 
 ### `POST /v1/messages`
 
@@ -488,7 +508,7 @@ docker pull "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
 docker run -d --name cc-proxy -p 3050:3050 -e PORT=3050 "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
 ```
 
-同一个提交标签包含两种架构，Docker 会按主机自动选择。`release` 分支另更新 `release` 标签，`v*` 发版另更新版本与 `latest` 标签；提交标签不带 `sha-` 前缀。工作流使用仓库的 `GITHUB_TOKEN` 写入 GHCR，镜像可见性由 GitHub Packages 设置决定。
+同一个提交标签包含两种架构，Docker 会按主机自动选择。`release` 分支同时更新 `release` 和 `latest` 标签，`v*` 发版另更新版本与 `latest` 标签；`master` 推送继续生成 7 位提交标签，不带 `sha-` 前缀。工作流使用仓库的 `GITHUB_TOKEN` 写入 GHCR，镜像可见性由 GitHub Packages 设置决定。
 
 ### 快速启动 (docker compose)
 

@@ -1,7 +1,7 @@
 import { BlockList, isIP } from 'node:net';
 
 export function getRequestKind({ method, path } = {}) {
-  return method === 'POST' && (path === '/v1/chat/completions' || path === '/v1/messages') ? 'model' : 'other';
+  return method === 'POST' && ['/v1/chat/completions', '/v1/messages', '/v1/responses'].includes(path) ? 'model' : 'other';
 }
 
 // Only bare addresses; no ports, zones, brackets, credentials, or retained header slices.

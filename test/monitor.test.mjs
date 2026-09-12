@@ -21,11 +21,22 @@ async function fixture(t, extraEnv = {}) {
   const upstream = http.createServer(async (req, res) => {
     let text = '';
     for await (const chunk of req) text += chunk;
-    if (req.url !== '/alpha/generate') { res.end('{}'); return; }
+    if (req.url !== '/alpha/generate') {
+      if (req.url === '/alpha/fingerprint/record' && req.headers.authorization?.includes('user_error_body_wait')) {
+        res.writeHead(500, {'Content-Type': 'application/json'}); res.write('{"error":'); return;
+      }
+      res.end('{}'); return;
+    }
     const params = JSON.parse(text).params;
     forwarded.push(params);
     const model = params.model;
     if (model === 'http-error') { res.writeHead(503); res.end('secret-upstream-response'); return; }
+    if (model === 'http-error-open') { res.writeHead(500, {'Content-Type': 'application/json'}); res.write('{"error":'); return; }
+    if (model === 'http-secret-error') {
+      res.writeHead(400, {'Content-Type': 'application/json'});
+      res.end(JSON.stringify({error: {type: 'billing_error', message: 'Insufficient credits: user_test_private_key Bearer sk-test-credential echoed-sensitive-prompt'}}));
+      return;
+    }
     res.setHeader('Content-Type', 'application/x-ndjson');
     const event = value => res.write(JSON.stringify(value) + '\n');
     if (model === 'hold') { event({ type: 'start' }); return; }
@@ -107,7 +118,7 @@ async function fixture(t, extraEnv = {}) {
     const body = await response.text();
     return { response, body };
   };
-  return { base, snapshot, request, forwarded, child };
+  return { base, snapshot, request, forwarded, child, logs: () => output };
 }
 
 test('monitor captures real proxy requests across both protocols', { timeout: 20000 }, async t => {
@@ -538,5 +549,29 @@ test('Anthropic partial usage preserves cache when inclusive input is unknown', 
     assert.equal(record.inputTokens, null);
     assert.equal(record.cachedInputTokens, 80);
     assert.equal(record.cacheWriteTokens, 12);
+  }
+});
+
+test('upstream error logs expose safe categories without keys or echoed prompts', {timeout: 10000}, async t => {
+  const f = await fixture(t);
+  for (const path of ['/v1/chat/completions', '/v1/messages', '/v1/responses']) {
+    const options = path.endsWith('/responses') ? {body: JSON.stringify({model: 'http-secret-error', input: 'hi', store: false})} : {};
+    const result = await f.request(path, 'http-secret-error', false, options);
+    assert.equal(result.response.status, 400);
+  }
+  await eventually(() => { assert.match(f.logs(), /Structured upstream error: billing_error/); });
+  assert.doesNotMatch(f.logs(), /user_test_private_key|sk-test-credential|echoed-sensitive-prompt/);
+  assert.doesNotMatch(JSON.stringify(await f.snapshot()), /user_test_private_key|sk-test-credential|echoed-sensitive-prompt/);
+});
+
+test('error response bodies have a bounded read deadline, including initialization', {timeout: 10000}, async t => {
+  const f = await fixture(t);
+  const initialized = await f.request('/v1/chat/completions', 'reported', false, {headers: {Authorization: 'Bearer user_error_body_wait'}});
+  assert.equal(initialized.response.status, 200, initialized.body);
+  for (const path of ['/v1/chat/completions', '/v1/messages', '/v1/responses']) {
+    const options = path.endsWith('/responses') ? {body: JSON.stringify({model: 'http-error-open', input: 'hi', store: false})} : {};
+    const result = await f.request(path, 'http-error-open', false, options);
+    assert.equal(result.response.status, 502);
+    assert.match(result.body, /read timed out/);
   }
 });

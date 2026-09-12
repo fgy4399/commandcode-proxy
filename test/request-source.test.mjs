@@ -150,3 +150,17 @@ test('duplicate physical headers and malformed XFF cannot fall back to forged X-
     assert.equal(record.ipSource, 'socket');
   }
 });
+
+test('Responses requests count as model traffic, while wrong methods remain other traffic', () => {
+  const store = createMonitorStore();
+  add(store, {path: '/v1/responses', status: 401});
+  add(store, {path: '/v1/responses?stream=true', status: 200, usage: {inputTokens: 120, outputTokens: 24}});
+  add(store, {method: 'GET', path: '/v1/responses', status: 404});
+  const result = query(store);
+  assert.equal(result.total, 3);
+  assert.equal(result.summary.total, 2);
+  assert.equal(result.summary.error, 1);
+  assert.equal(result.summary.inputTokens, 120);
+  assert.equal(result.summary.failureRate, 0.5);
+  assert.equal(result.summary.excludedTotal, 1);
+});

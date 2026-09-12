@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createMonitorStore, createMonitorHandler, readReportedUsage } from '../monitor.mjs';
+import { createCompletionState } from '../completion-state.mjs';
 
 function tracked(store) {
   const res = Object.assign(new EventEmitter(), { headersSent: false, statusCode: 200, writableFinished: false });
@@ -85,4 +86,20 @@ test('reasoning tokens preserve missing vs zero, sum steps, and replace totals',
   const record = store.snapshot().requests[0];
   assert.equal(record.reasoningTokens, 0);
   assert.equal(record.inputTokens + record.outputTokens, 144);
+});
+
+test('monitor and protocol counters merge partial finish reports with the same precedence', () => {
+  const store = createMonitorStore();
+  const {tracker} = tracked(store);
+  const state = createCompletionState();
+  const event = {type: 'finish', finishReason: 'stop',
+    usage: {inputTokens: 100, outputTokens: 24, cachedInputTokens: 80, cacheWriteTokens: 12, reasoningTokens: 10},
+    totalUsage: {inputTokens: 120, cachedInputTokens: 0}};
+  tracker.observeEvent(event); state.observe(event);
+  const record = store.snapshot().requests[0];
+  for (const field of ['inputTokens', 'outputTokens', 'cachedInputTokens', 'cacheWriteTokens', 'reasoningTokens']) {
+    assert.equal(record[field], state[field], field);
+  }
+  assert.equal(record.outputTokens, 24);
+  assert.equal(record.cachedInputTokens, 0);
 });

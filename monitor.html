@@ -31,7 +31,7 @@
 <div id="filter-error" class="filter-error" role="alert" hidden></div>
 </div>
 </section>
-<p id="stats-scope" class="subtitle" style="margin-bottom:12px" role="status">模型统计仅包含两个生成接口的 POST 请求；其他路径保留在日志中。</p>
+<p id="stats-scope" class="subtitle" style="margin-bottom:12px" role="status">模型统计包含 Chat Completions、Messages、Responses 的 POST 请求；其他路径保留在日志中。</p>
 <section class="stats" aria-label="请求统计">
 <div class="card stat"><div class="stat-title">模型请求数<span class="stat-icon">↗</span></div><div id="total" class="stat-value">0</div><div class="stat-note"><span>成功 <b id="success">0</b></span><span>失败 <b id="errors">0</b></span><span>进行中 <b id="pending">0</b></span></div></div>
 <div class="card stat"><div class="stat-title" title="所选范围内模型请求的输入总量加输出，缓存和推理明细不重复加总">Token 累计用量<span class="stat-icon">T</span></div><div id="tokens" class="stat-value">—</div><div class="stat-note"><span title="已包含缓存读取与写入，不是 Anthropic 的未缓存 input_tokens">输入（含缓存）<b id="input">—</b></span><span>输出 <b id="output">—</b></span><span title="上游报告的输出 Token 明细，不重复加入总用量">其中推理 <b id="reasoning">—</b></span></div></div>
@@ -145,7 +145,7 @@ function render() {
     'cache-read': number(summary.cachedInputTokens), 'cache-write': number(summary.cacheWriteTokens),
     'cache-hits': number(summary.cacheHits), latency: duration(summary.avgDurationMs),
     'success-rate': percent(summary.successRate), 'failure-rate': percent(summary.failureRate), 'log-count': number(state.data?.total) + ' 条',
-    'stats-scope': state.data ? `当前筛选：${number(summary.trafficTotal)} 条日志，其中 ${number(summary.total)} 条模型请求；${number(summary.excludedTotal)} 条其他请求已排除出统计。失败率包含模型请求失败及断开，不含进行中请求。` : '模型统计仅包含两个生成接口的 POST 请求；其他路径保留在日志中。',
+    'stats-scope': state.data ? `当前筛选：${number(summary.trafficTotal)} 条日志，其中 ${number(summary.total)} 条模型请求；${number(summary.excludedTotal)} 条其他请求已排除出统计。失败率包含模型请求失败及断开，不含进行中请求。` : '模型统计包含 Chat Completions、Messages、Responses 的 POST 请求；其他路径保留在日志中。',
     coverage: state.data ? `模型用量：${summary.usageReported} / ${summary.total} 条已报告 · ${summary.reasoningReported} 条已报告推理 Token · 模型请求已断开 ${summary.aborted} 条` : '等待查询结果 · — 表示未报告',
   };
   Object.entries(values).forEach(([id, value]) => { $(id).textContent = value; });

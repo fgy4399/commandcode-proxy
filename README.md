@@ -31,10 +31,11 @@ curl http://127.0.0.1:3050/v1/chat/completions \
 Open **http://127.0.0.1:3050/monitor** (adjust the port if configured). Global filters above the cards combine Key, model, request type, status, source IP and **1/7/30 days or a custom interval** (local timezone, inclusive endpoints). Refreshes every 2 seconds with search, pagination, details, pause and export. Cards and charts summarize all matching model requests; the list and export contain all matching traffic.
 
 - Tracks API requests, including validation failures, upstream errors, and disconnects. Health checks, OPTIONS, and monitor requests are excluded.
-- Only **POST `/v1/chat/completions` and `/v1/messages`** count toward model statistics. Probe paths such as `/.git/config` and `/backup.sql`, model catalog requests and other traffic remain logged but do not affect model counts, usage, charts, latency or rates. Failure rate = (model errors + aborted model requests) / completed model requests; no completed requests displays `—`. Model-route validation/authentication/rate-limit failures still count. Legacy records are classified by method/path rather than status code.
+- **POST `/v1/chat/completions`, `/v1/messages`, and `/v1/responses`** count toward model statistics. Probe paths such as `/.git/config` and `/backup.sql`, model catalog requests and other traffic remain logged but do not affect model counts, usage, charts, latency or rates. Failure rate = (model errors + aborted model requests) / completed model requests; no completed requests displays `—`. Model-route validation/authentication/rate-limit failures still count. Legacy records are classified by method/path rather than status code.
 - Records include canonical IPv4/IPv6 `clientIp`, socket `peerIp`, and `ipSource`. Exact source-IP filters and IP text search are available. Legacy IPs remain unknown. NAT, VPN and reverse proxies may hide a public address; only observable addresses are recorded.
 - Shows input/output tokens, cache reads/writes, cache-hit requests, latency, and a usage chart for the selected interval. Cache hit rate is cached input divided by input tokens **for requests reporting both fields**. Cache writes are not hits; cached tokens are already included in input tokens and are not added again to total usage.
 - Monitor input includes cache reads/writes, and top cards accumulate model calls over the selected range rather than measuring current context occupancy. Anthropic `input_tokens` excludes both cache buckets: total input minus reads minus writes. Both response modes perform this conversion without altering raw monitor history. For input 6786, cache read 6528, output 450 and no cache writes, uncached input is 258, total usage 7236 and per-request hit rate 96.2%. Older responses double-counted cache in client totals; upgrading fixes new responses, not already stored client history. Some clients exclude cache writes from the cache-rate denominator, so rates can still differ when writes are nonzero.
+- Valid upstream `inputTokenDetails.noCacheTokens` is preferred for Anthropic uncached input, bounded by the known inclusive total after cache deductions. Upstream error-body reads have size/time bounds and logs retain fixed error categories rather than arbitrary echoed keys or conversation content.
 - Collects raw upstream usage in all OpenAI/Anthropic streaming and non-streaming paths. Missing fields display `—`, explicit zeros display `0`; local output estimates are excluded. Failed or interrupted requests may report partial usage.
 - Each record shows forwarded reasoning effort and reasoning tokens; details include requested effort, thinking type, and budget. Reasoning tokens come from upstream `usage.reasoningTokens` or `usage.outputTokenDetails.reasoningTokens` (also under `totalUsage`), never text estimates. Missing values display `—`; explicit zero displays `0`. Reasoning is an output-token breakdown, not added again to totals. A missing forwarded effort means the field was omitted or forwarding has not started, not that the model did no reasoning.
 - Explicit effort values pass through unchanged. OpenAI uses `reasoning_effort`; Anthropic precedence is `reasoning_effort` > `output_config.effort` > `thinking.effort`, forwarded as `params.reasoning_effort`. Adaptive thinking no longer injects `medium` when effort is absent. Enabled thinking with only a budget retains compatibility mapping: ≥10000→high, ≥5000→medium, otherwise→low. Accepted effort values and availability of reasoning usage depend on the upstream provider.
@@ -231,6 +232,25 @@ data: [DONE]
   }
 }
 ```
+
+### `POST /v1/responses`
+
+OpenAI Responses compatibility for clients using that protocol. Supports string or item-array `input`, `instructions`, function calls and tool-result replay, streaming and non-streaming output.
+
+```bash
+curl http://127.0.0.1:3050/v1/responses \
+  -H "Authorization: Bearer user_xxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek/deepseek-v4.1-flash","input":"Hello","reasoning":{"effort":"high"},"max_output_tokens":1024,"store":false,"stream":true}'
+```
+
+- `reasoning.effort` passes through to upstream effort; `max_output_tokens` maps to the output limit. Cached tokens are included in `usage.input_tokens`, not added twice.
+- Function tools use flat definitions (`type`, `name`, `parameters`); clients execute them and replay `function_call_output` items.
+- Named SSE events include increasing `sequence_number`. Normal completion emits `response.completed`; output limits emit `response.incomplete` with `max_output_tokens`. Upstream failures or truncated streams are not reported as completed.
+- Shares monitoring, masked keys/IPs, backpressure, idle timeouts, and disconnect cleanup. Valid output with an upstream finish but incomplete usage does not fabricate zero usage.
+- **Unsupported:** `previous_response_id`, `store: true`, and server-side built-ins such as `web_search`, `file_search`, or `code_interpreter`; these return 400. Clients must supply full input history for subsequent turns.
+
+Historical Chat `reasoning_content`, Anthropic `thinking` blocks, and Responses reasoning input items are replayed upstream so DeepSeek thinking-mode follow-ups retain required reasoning context.
 
 ### `POST /v1/messages`
 
@@ -490,7 +510,7 @@ docker pull "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
 docker run -d --name cc-proxy -p 3050:3050 -e PORT=3050 "ghcr.io/fgy4399/commandcode-proxy:${IMAGE_TAG}"
 ```
 
-The same commit tag includes both architectures; Docker selects the host architecture automatically. The `release` branch additionally updates `release`; `v*` tags additionally publish version and `latest` tags. Commit tags have no `sha-` prefix. The workflow uses `GITHUB_TOKEN` to publish; image visibility follows the GitHub Packages settings.
+The same commit tag includes both architectures; Docker selects the host architecture automatically. The `release` branch updates both `release` and `latest`; `v*` tags additionally publish version and `latest` tags. Pushes to `master` retain seven-character commit tags without a `sha-` prefix. The workflow uses `GITHUB_TOKEN` to publish; image visibility follows GitHub Packages settings.
 
 ### Quick Start (docker compose)
 
